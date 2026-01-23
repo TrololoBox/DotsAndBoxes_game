@@ -20,3 +20,9 @@ Design donation flow and placement (non-intrusive).
 
 ## Edge cases
 - User declines donation prompt.
+
+---
+
+## Donation Entry Point
+- Add a **menu button** for project support/donations.
+- Payment provider is **TBD** (placeholder integration until selected).

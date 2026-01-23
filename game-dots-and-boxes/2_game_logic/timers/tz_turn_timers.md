@@ -26,9 +26,13 @@ Define timer behavior for turns and AFK handling.
 
 ---
 
+## Turn Timers (Simplified)
+- **PvE**: 60 seconds per turn.
+- **PvP**: 45 seconds per turn.
+
 ## AFK Flow
 - On timeout, the player’s turn is skipped.
-- If repeated or threshold exceeded, present choice:
+- After **2 consecutive timeouts**, present choice:
   - Continue vs Bot
   - Surrender
 - Copy must be warm and human.

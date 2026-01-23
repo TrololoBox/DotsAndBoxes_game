@@ -37,13 +37,15 @@ Define the product vision, positioning, and non-negotiable constraints for the D
 ### In Scope (v1)
 - PvE with three difficulty levels.
 - PvP matchmaking and friend invites.
-- Custom player emojis and edge color preferences.
+- Custom player emojis and **preset** edge color themes.
 - Turn timers and AFK handling with warm UX.
 - In-memory runtime state only.
 - Board rendering via Python Pillow.
+- Russian-only UI (English after core stability).
 
 ### Out of Scope (v1)
 - Spectator mode.
 - Persistent storage of game sessions after restart.
 - Ratings implementation (design only).
 - Pay-to-win or forced ads.
+- Group chat support.

@@ -21,11 +21,14 @@ Define in-memory state structures and ownership boundaries.
 - Logic layer directly manipulates storage.
 
 ## Edge cases
-- Multiple concurrent games per user (open question).
+- A user attempts to start a second game while one is active (must block).
 
 ---
 
 ## State Categories
-- **Player Profile**: emoji, name, preferences.
+- **Player Profile**: Telegram username, emoji, preferences.
 - **Active Rooms**: players, board state, timers.
 - **Queues**: matchmaking pools.
+
+## Concurrency Rule
+- Each user can have **only one active game** at a time.

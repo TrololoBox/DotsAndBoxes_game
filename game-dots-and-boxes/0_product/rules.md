@@ -38,5 +38,5 @@ Document immutable rules and game mechanics for developers and designers.
 ## Identity Rendering Rule
 If both players choose the same emoji:
 - Each player views themselves using their chosen emoji.
-- The opponent is displayed using a standard fallback emoji from the system.
+- The opponent is displayed using the fallback emoji **👤**.
 - Rendering is per-viewer (not global).

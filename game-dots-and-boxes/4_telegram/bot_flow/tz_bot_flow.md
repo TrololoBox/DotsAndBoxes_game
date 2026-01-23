@@ -25,5 +25,12 @@ Define end-to-end Telegram bot user flow.
 
 ## Flow Summary
 - /start -> Main Menu
-- Play -> choose mode -> match setup -> game screen
-- Game end -> results -> rematch or menu
+- Play -> choose mode -> **choose board size** -> match setup -> game screen
+- Game end -> results -> **soft-ad offer** -> rematch or menu
+
+## Post-Match Soft-Ad Offer
+- Show message with button: **"Посмотреть рекламу"**.
+- On click, trigger ad playback (stub for now).
+
+## Rematch Behavior
+- Rematch restarts the same match configuration: same starting player, same board size, same colors, same emojis.
