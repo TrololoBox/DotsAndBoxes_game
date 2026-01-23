@@ -30,6 +30,13 @@ Define deterministic board rendering using Python Pillow.
 
 ---
 
+## Preset Themes (v1)
+All color choices are presets only (no custom colors in v1).
+
+- **Classic**: Player A `#2F80ED`, Player B `#EB5757`, Neutral `#BDBDBD`, Background `#F2F2F2`.
+- **Forest**: Player A `#219653`, Player B `#F2994A`, Neutral `#BDBDBD`, Background `#F2F2F2`.
+- **Night**: Player A `#56CCF2`, Player B `#BB6BD9`, Neutral `#4F4F4F`, Background `#1B1B1B`.
+
 ## Rendering Steps (Pseudo)
 1. Create blank image with fixed background.
 2. Draw dots at grid intersections.

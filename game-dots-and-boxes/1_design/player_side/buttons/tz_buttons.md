@@ -33,7 +33,7 @@ Specify all player-facing buttons and their behaviors during gameplay and menus.
 - **Play Menu**: PvE, PvP World, PvP Friend.
 - **PvP Friend**: Create Invite, Enter Code, Back.
 - **Profile**: View stats, Change emoji, Back.
-- **Settings**: Change emoji, Edge colors, Player name, Visual prefs, Back.
+- **Settings**: Change emoji, Edge color preset, Visual prefs, Back.
 - **Game Board**: Inline keyboard grid representing edges.
 - **Post-Game**: Rematch, Back to Menu, Share (optional if supported).
 - **AFK Prompt**: Continue vs Bot, Surrender.

@@ -25,6 +25,10 @@ Define fast matchmaking flow and rating preparation.
 
 ---
 
+## Matchmaking Preferences
+- Board size is **selected by the user before queueing**.
+- Supported sizes: **3x3, 4x4, 5x5** squares.
+
 ## Rating Design (Plan Only)
 - Record outcomes for future rating computation.
 - Store minimal event logs for v2 migration.

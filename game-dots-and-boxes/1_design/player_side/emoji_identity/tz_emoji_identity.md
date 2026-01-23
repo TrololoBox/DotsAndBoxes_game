@@ -33,4 +33,4 @@ Define how player emoji selection, storage, and rendering should work.
 - Each user picks one emoji in Settings and stores it to their profile.
 - In a game state, each viewer sees their own emoji for self.
 - If both players picked the same emoji, the opponent is rendered with a **fallback emoji**.
-- The fallback emoji is defined centrally (see open questions).
+- The fallback emoji is **👤** (neutral silhouette) and is only used for the opponent view.
