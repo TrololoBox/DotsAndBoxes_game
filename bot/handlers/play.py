@@ -11,11 +11,25 @@ from telegram_pkg.keyboards import (
     play_mode_keyboard, board_size_keyboard, difficulty_keyboard, queue_keyboard
 )
 from telegram_pkg.messages import (
-    PLAY_MODE_TITLE, PLAY_SIZE_TITLE, PLAY_DIFFICULTY_TITLE, QUEUE_WAITING
+    PLAY_MODE_TITLE,
+    PLAY_SIZE_TITLE,
+    PLAY_DIFFICULTY_TITLE,
+    QUEUE_WAITING,
+    QUEUE_ALREADY,
+    QUEUE_NOT_FOUND,
+    QUEUE_CANCELLED,
+    LARGE_BOARD_INFO,
+    GAME_START_ERROR,
+    INVITE_CREATED_HTML,
+    INVITE_SHARE_TEXT,
+    BTN_CANCEL,
+    BTN_INVITE_FRIEND,
+    BOT_EMOJI,
 )
 from state.players import get_or_create_player, set_player_room
 from state.rooms import create_room, GameMode
 from state.queues import join_queue, leave_queue, find_match, get_queue_position
+from state.engine import start_game
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +43,6 @@ PENDING_SIZE_KEY = "pending_size"
 async def play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle play-related callbacks."""
     query = update.callback_query
-    print(f"DEBUG: play_callback called with {query.data}")
     await query.answer()
     
     user = update.effective_user
@@ -97,10 +110,7 @@ async def handle_size_selection(
     is_numbered = (2 * width + 1) > 8
     
     if is_numbered:
-        await query.answer(
-            "ℹ️ Большое поле: Активирован режим ввода по номерам!",
-            show_alert=True
-        )
+        await query.answer(LARGE_BOARD_INFO, show_alert=True)
     
     if mode == "pve":
         # Show difficulty selection for PvE
@@ -129,7 +139,7 @@ async def handle_size_selection(
                     reply_markup=queue_keyboard(),
                 )
         else:
-            await query.answer("Вы уже в очереди!", show_alert=True)
+            await query.answer(QUEUE_ALREADY, show_alert=True)
     
     elif mode == "pvp_friend":
         # Create invite room
@@ -157,7 +167,7 @@ async def handle_difficulty_selection(
         player_a_id=user.id,
         bot_difficulty=difficulty,
         player_a_emoji=player.emoji,
-        player_b_emoji="🤖",
+        player_b_emoji=BOT_EMOJI,
         theme=player.theme,
     )
     
@@ -165,7 +175,10 @@ async def handle_difficulty_selection(
     set_player_room(user.id, room.id)
     
     # Start the game
-    room.start_game()
+    result = start_game(room)
+    if not result.ok:
+        await query.answer(GAME_START_ERROR, show_alert=True)
+        return
     logger.info(f"Room {room.id} started. Sending initial state.")
     
     # Import here to avoid circular import
@@ -175,7 +188,7 @@ async def handle_difficulty_selection(
         logger.info("Initial state sent successfully.")
     except Exception as e:
         logger.error(f"Failed to send game state: {e}", exc_info=True)
-        await query.answer("Ошибка запуска игры!", show_alert=True)
+        await query.answer(GAME_START_ERROR, show_alert=True)
 
 
 async def handle_cancel_queue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -185,13 +198,13 @@ async def handle_cancel_queue(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if leave_queue(user.id):
         await query.edit_message_text(
-            "❌ Поиск отменён.\n\nВозвращаемся в меню...",
+            QUEUE_CANCELLED,
         )
         
         # Return to mode selection
         await show_mode_selection(update, context)
     else:
-        await query.answer("Вы не в очереди.", show_alert=True)
+        await query.answer(QUEUE_NOT_FOUND, show_alert=True)
 
 
 async def start_pvp_game(
@@ -219,7 +232,10 @@ async def start_pvp_game(
     set_player_room(player_a_id, room.id)
     set_player_room(player_b_id, room.id)
     
-    room.start_game()
+    result = start_game(room)
+    if not result.ok:
+        await update.callback_query.answer(GAME_START_ERROR, show_alert=True)
+        return
     
     # Notify both players
     # Note: In production, we'd need to send messages to both users
@@ -254,19 +270,16 @@ async def create_friend_invite(
     from html import escape
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
-    invite_message = (
-        "👥 <b>Приглашение создано!</b>\n\n"
-        f"Нажми кнопку ниже, чтобы пригласить друга, или отправь ссылку:\n"
-        f"<code>{escape(invite_link)}</code>\n\n"
-        f"Код: <code>{escape(room.invite_code)}</code>\n\n"
-        "⏳ Ссылка действительна 10 минут."
+    invite_message = INVITE_CREATED_HTML.format(
+        link=escape(invite_link),
+        code=escape(room.invite_code),
     )
     
     # Share button - opens chat selection to share the link
-    share_text = f"🎮 Давай сыграем в Точки и Квадраты!\n{invite_link}"
+    share_text = INVITE_SHARE_TEXT.format(link=invite_link)
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Пригласить друга", switch_inline_query=share_text)],
-        [InlineKeyboardButton("❌ Отменить", callback_data="menu:main")],
+        [InlineKeyboardButton(BTN_INVITE_FRIEND, switch_inline_query=share_text)],
+        [InlineKeyboardButton(BTN_CANCEL, callback_data="menu:main")],
     ])
     
     await query.edit_message_text(

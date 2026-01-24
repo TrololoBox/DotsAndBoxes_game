@@ -10,7 +10,8 @@ from enum import Enum
 from typing import Optional
 import logging
 
-from state.rooms import Room, GameMode
+from state.rooms import Room, GameMode, RoomState
+from state.logging_utils import log_event
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ def get_timer_status(room: Room) -> TimerStatus:
     )
 
 
-def handle_timeout(room: Room) -> bool:
+def handle_timeout(room: Room, expected_version: int) -> bool:
     """
     Handle a turn timeout.
     
@@ -87,6 +88,19 @@ def handle_timeout(room: Room) -> bool:
     Returns:
         True if should show AFK choice, False otherwise
     """
+    if room.state != RoomState.ACTIVE or room.state_version != expected_version:
+        log_event(
+            logger,
+            logging.INFO,
+            "timeout_ignored",
+            game_id=room.id,
+            room_id=room.id,
+            expected_version=expected_version,
+            state_version=room.state_version,
+            reason="state_changed",
+        )
+        return False
+
     # Increment timeout counter for current player
     if room.current_player_index == 0:
         room.consecutive_timeouts_a += 1
@@ -95,9 +109,15 @@ def handle_timeout(room: Room) -> bool:
         room.consecutive_timeouts_b += 1
         timeouts = room.consecutive_timeouts_b
     
-    logger.info(
-        f"Room {room.id}: Player {room.current_player_id} timed out "
-        f"({timeouts} consecutive)"
+    log_event(
+        logger,
+        logging.INFO,
+        "timeout_recorded",
+        game_id=room.id,
+        room_id=room.id,
+        user_id=room.current_player_id,
+        timeouts=timeouts,
+        state_version=room.state_version,
     )
     
     return timeouts >= AFK_THRESHOLD

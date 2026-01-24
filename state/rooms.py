@@ -15,10 +15,11 @@ from game.board import Board, create_board
 
 class RoomState(Enum):
     """Room lifecycle states."""
-    PENDING = "pending"      # Waiting for opponent (invites)
-    ACTIVE = "active"        # Game in progress
-    COMPLETED = "completed"  # Game finished
-    ABANDONED = "abandoned"  # Cleaned up
+    CREATED = "created"    # Room created, not yet started
+    WAITING = "waiting"    # Waiting for opponent (invites/queue)
+    ACTIVE = "active"      # Game in progress
+    FINISHED = "finished"  # Game finished
+    ABORTED = "aborted"    # Game aborted/terminated
 
 
 class GameMode(Enum):
@@ -52,11 +53,13 @@ class Room:
     # Game state
     board: Optional[Board] = None
     current_player_index: int = 0  # 0 = player_a, 1 = player_b
-    state: RoomState = RoomState.PENDING
+    state: RoomState = RoomState.CREATED
+    state_version: int = 0
+    move_number: int = 0
+    end_reason: Optional[str] = None
+    end_reason_detail: Optional[str] = None
     
     # Player customization (cached at game start)
-    player_a_emoji: str = "😀"
-    player_b_emoji: str = "😎"
     player_a_emoji: str = "😀"
     player_b_emoji: str = "😎"
     theme: str = "classic"
@@ -68,10 +71,12 @@ class Room:
     consecutive_timeouts_a: int = 0
     consecutive_timeouts_b: int = 0
     turn_started_at: Optional[datetime] = None
+    turn_version: int = 0
     
     # Timestamps
     created_at: datetime = field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
+    last_activity_at: datetime = field(default_factory=datetime.now)
     
     # Invite code for friend matches
     invite_code: Optional[str] = None
@@ -83,7 +88,7 @@ class Room:
     def __post_init__(self):
         # Calculate dimensions and mode if not set properly (e.g. init from raw size)
         # Note: create_room handles this explicitly, but good for safety
-        if self.board is None and self.state != RoomState.PENDING:
+        if self.board is None and self.state not in {RoomState.CREATED, RoomState.WAITING}:
             self.board = create_board(self.board_size, width=self.board_width, height=self.board_height)
     
     @property
@@ -104,20 +109,23 @@ class Room:
         """Switch to the other player's turn."""
         self.current_player_index = 1 - self.current_player_index
         self.turn_started_at = datetime.now()
+        self.turn_version = self.state_version
     
     def keep_current_player(self) -> None:
         """Keep current player for extra turn."""
         self.turn_started_at = datetime.now()
+        self.turn_version = self.state_version
     
     def start_game(self) -> None:
         """Initialize and start the game."""
         self.board = create_board(self.board_size, width=self.board_width, height=self.board_height)
         self.state = RoomState.ACTIVE
         self.turn_started_at = datetime.now()
+        self.turn_version = self.state_version
     
     def complete_game(self) -> None:
         """Mark game as completed."""
-        self.state = RoomState.COMPLETED
+        self.state = RoomState.FINISHED
         self.completed_at = datetime.now()
     
     def is_pve(self) -> bool:
@@ -193,6 +201,10 @@ def create_room(
     else:
         input_mode = "classic"
     
+    initial_state = RoomState.CREATED
+    if mode == GameMode.PVP_FRIEND and player_b_id is None:
+        initial_state = RoomState.WAITING
+
     room = Room(
         id=room_id,
         mode=mode,
@@ -206,6 +218,7 @@ def create_room(
         player_a_emoji=player_a_emoji,
         player_b_emoji=player_b_emoji,
         theme=theme,
+        state=initial_state,
     )
     
     # For friend invites, generate invite code

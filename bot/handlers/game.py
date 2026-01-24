@@ -7,32 +7,47 @@ All invalid taps receive toast feedback (no silent failures).
 
 import logging
 import io
-from telegram import Update, InputFile
+from telegram import Update
 from telegram.ext import ContextTypes
 
 from telegram_pkg.callback_parser import parse_callback, CallbackAction, matrix_to_edge_id
 from telegram_pkg.keyboards import (
     game_board_keyboard, numbered_edge_keyboard, lines_keyboard,
-    post_game_keyboard, afk_choice_keyboard
+    post_game_keyboard
 )
 from telegram_pkg.messages import (
     GAME_STATUS, YOUR_TURN, OPPONENT_TURN, BOT_TURN,
-    CAPTURE_SINGLE, CAPTURE_DOUBLE, GAME_OVER_WIN, GAME_OVER_LOSE, GAME_OVER_DRAW,
-    NUMBERED_MODE_HELP
+    GAME_OVER_WIN, GAME_OVER_LOSE, GAME_OVER_DRAW,
+    NUMBERED_MODE_HELP,
+    LEAVE_GAME_MESSAGE,
+    BOT_DIFFICULTY_NAMES,
+    BOT_NAME_TEMPLATE,
+    OPPONENT_FALLBACK,
+    BOT_DIFFICULTY_DEFAULT,
 )
 from telegram_pkg.toasts import (
-    toast_occupied_edge, toast_tap_dot, toast_tap_square,
-    toast_not_your_turn, toast_game_finished, toast_transition_state
+    toast_tap_dot,
+    toast_tap_square,
+    toast_unknown_error,
+    toast_ad_placeholder,
 )
-from state.rooms import Room, get_room, RoomState
+from telegram_pkg.ux import toast_for_error
+from state.rooms import Room, get_room
 from state.players import get_player, set_player_room
-from game.turn import apply_turn, TurnError
 from game.scoring import calculate_result
 from render.board_renderer import render_board
 from ai.easy import EasyBot
 from ai.medium import MediumBot
 from ai.hard import HardBot
-from timers.turn_timer import reset_timeout_counter
+from state.engine import (
+    apply_edge_move,
+    apply_numbered_move,
+    apply_bot_edge,
+    update_page,
+    abandon_room,
+)
+from game.lines_pagination import get_lines_max_page
+from state.logging_utils import log_event
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +69,11 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     logger.info(f"User {user.id} game callback: {query.data}")
     
+    if callback.action == CallbackAction.LEAVE:
+        await query.answer()
+        await handle_leave_game(update, context)
+        return
+
     # Handle NOOP first (dots, squares, occupied edges)
     if callback.is_noop:
         await handle_noop(update, context, callback.noop_reason)
@@ -64,34 +84,11 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     
     elif callback.is_num:
-        # Get player's current room
-        player = get_player(user.id)
-        if not player or not player.current_room_id:
-            await query.answer(toast_game_finished(), show_alert=False)
-            return
-        room = get_room(player.current_room_id)
-        if not room:
-            await query.answer(toast_game_finished(), show_alert=False)
-            return
-        await handle_numbered_edge_placement(update, context, room, callback)
+        await handle_numbered_edge_placement(update, context, callback)
         return
         
     elif callback.action == CallbackAction.PAGE:
-        # Update page and refresh
-        try:
-            page = int(callback.param1)
-            room = get_room(get_player(user.id).current_room_id) # Need to get room here
-            if room:
-                room.current_page = page
-                # We must answer callback to stop loading animation
-                await query.answer()
-                # Resend state (or edit markup if possible, but send_game_state handles full refresh)
-                await send_game_state(update, context, room)
-            else:
-                await query.answer(toast_game_finished(), show_alert=False)
-        except Exception as e:
-            logger.error(f"Error handling page callback: {e}")
-            await query.answer("Ошибка!", show_alert=True)
+        await handle_page_change(update, context, callback)
         return
     
     if callback.action == CallbackAction.REMATCH:
@@ -101,17 +98,20 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     if callback.action == CallbackAction.AFK:
         await query.answer()
-        await handle_afk_choice(update, context, callback.param1)
+        await handle_afk_choice(update, context, callback)
         return
     
-    # Handle leave game
-    if query.data == "leave":
-        await query.answer()
-        await handle_leave_game(update, context)
-        return
-    
-    # Unknown callback
-    await query.answer()
+    log_event(
+        logger,
+        logging.WARNING,
+        "action_rejected",
+        game_id=None,
+        room_id=None,
+        user_id=user.id,
+        reason="unknown_callback",
+        data=query.data,
+    )
+    await query.answer(toast_unknown_error(), show_alert=False)
 
 
 async def handle_noop(
@@ -129,13 +129,16 @@ async def handle_noop(
         await query.answer(toast_tap_square(), show_alert=False)
     
     elif reason == "occupied":
-        await query.answer(toast_occupied_edge(), show_alert=False)
+        await query.answer(toast_for_error("edge_occupied"), show_alert=False)
     
     elif reason == "ad":
-        await query.answer("📺 Рекламный блок скоро появится!", show_alert=False)
+        await query.answer(toast_ad_placeholder(), show_alert=False)
+
+    elif reason == "page":
+        await query.answer(toast_for_error("action_rejected"), show_alert=False)
     
     else:
-        await query.answer()
+        await query.answer(toast_unknown_error(), show_alert=False)
 
 
 async def handle_edge_placement(
@@ -150,77 +153,77 @@ async def handle_edge_placement(
     # Get player's current room
     player = get_player(user.id)
     if not player or not player.current_room_id:
-        await query.answer(toast_game_finished(), show_alert=False)
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=None,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
         return
     
     room = get_room(player.current_room_id)
     if not room:
-        await query.answer(toast_game_finished(), show_alert=False)
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=player.current_room_id,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
         return
-    
-    # Check game state
-    if room.state == RoomState.COMPLETED:
-        await query.answer(toast_game_finished(), show_alert=False)
+
+    if callback.version is None:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user.id,
+            reason="stale_callback",
+        )
+        await query.answer(toast_for_error("stale_callback"), show_alert=False)
         return
-    
-    if room.state != RoomState.ACTIVE:
-        await query.answer(toast_transition_state(), show_alert=False)
+
+    if callback.edge_type is None or callback.edge_matrix_row is None or callback.edge_matrix_col is None:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user.id,
+            reason="invalid_edge",
+        )
+        await query.answer(toast_for_error("invalid_edge"), show_alert=False)
         return
-    
-    # Check if it's player's turn
-    if not room.is_player_turn(user.id):
-        await query.answer(toast_not_your_turn(), show_alert=False)
-        return
-    
+
     # Convert matrix coords to edge_id
     edge_id = matrix_to_edge_id(
         callback.edge_type,
         callback.edge_matrix_row,
         callback.edge_matrix_col,
     )
-    
-    # Check if edge is already occupied (server-side validation)
-    edge = room.board.get_edge(edge_id)
-    if edge and edge.is_occupied:
-        await query.answer(toast_occupied_edge(), show_alert=False)
-        return
-    
-    # Apply the move
-    player_id_str = str(user.id)
-    other_player_str = str(room.other_player_id) if room.other_player_id else "bot"
-    
-    result = apply_turn(
-        board=room.board,
-        player_id=player_id_str,
-        edge_id=edge_id,
-        current_player=str(room.current_player_id),
-        other_player=other_player_str,
-    )
-    
-    if not result.success:
-        if result.error == TurnError.EDGE_OCCUPIED:
-            await query.answer(toast_occupied_edge(), show_alert=False)
-        else:
-            await query.answer("Что-то пошло не так 🤔", show_alert=False)
+
+    result = apply_edge_move(room, user.id, edge_id, callback.version)
+    if not result.ok:
+        await query.answer(toast_for_error(result.error_code), show_alert=False)
         return
     
     # Move successful - acknowledge
     await query.answer()
     
-    # Reset timeout counter (player made a move)
-    reset_timeout_counter(room)
-    
     # Check if game is over
     if result.game_over:
-        room.complete_game()
         await send_game_over(update, context, room)
         return
-    
-    # Handle turn transition
-    if result.extra_turn:
-        room.keep_current_player()
-    else:
-        room.switch_player()
     
     # If PvE and bot's turn, make bot move
     if room.is_pve() and not room.is_player_turn(user.id):
@@ -243,187 +246,145 @@ async def handle_numbered_edge_placement(
     """Handle player placing an edge via numeric input."""
     query = update.callback_query
     user = update.effective_user
-    
-    # Get player's current room
+
     player = get_player(user.id)
     if not player or not player.current_room_id:
-        await query.answer(toast_game_finished(), show_alert=False)
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=None,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
         return
-    
+
     room = get_room(player.current_room_id)
     if not room:
-        await query.answer(toast_game_finished(), show_alert=False)
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=player.current_room_id,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
         return
-    
-    # Check game state
-    if room.state != RoomState.ACTIVE:
-        await query.answer(toast_transition_state(), show_alert=False)
+
+    if callback.version is None:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user.id,
+            reason="stale_callback",
+        )
+        await query.answer(toast_for_error("stale_callback"), show_alert=False)
         return
-    
-    # Check if it's player's turn
-    if not room.is_player_turn(user.id):
-        await query.answer(toast_not_your_turn(), show_alert=False)
+
+    result = apply_numbered_move(room, user.id, callback.edge_number, callback.version)
+    if not result.ok:
+        await query.answer(toast_for_error(result.error_code), show_alert=False)
         return
-        
-    # Get edge ID from number
-    from game.edge_numbering import get_edge_by_number
-    edge_number = callback.edge_number
-    
-    if not edge_number:
-        await query.answer("Неверный номер грани ❌", show_alert=False)
-        return
-        
-    edge_id = get_edge_by_number(room.board, edge_number)
-    
-    if not edge_id:
-        await query.answer("Грань не найдена ❌", show_alert=False)
-        return
-    
-    # Check if edge is already occupied
-    edge = room.board.get_edge(edge_id)
-    if edge and edge.is_occupied:
-        await query.answer(toast_occupied_edge(), show_alert=False)
-        return
-    
-    # Apply the move (reuse logic implicitly by creating result manually or calling apply_turn)
-    # Apply the move
-    player_id_str = str(user.id)
-    other_player_str = str(room.other_player_id) if room.other_player_id else "bot"
-    
-    result = apply_turn(
-        board=room.board,
-        player_id=player_id_str,
-        edge_id=edge_id,
-        current_player=str(room.current_player_id),
-        other_player=other_player_str,
-    )
-    
-    if not result.success:
-        if result.error == TurnError.EDGE_OCCUPIED:
-            await query.answer(toast_occupied_edge(), show_alert=False)
-        else:
-            await query.answer("Что-то пошло не так 🤔", show_alert=False)
-        return
-    
-    # Move successful - acknowledge
+
     await query.answer()
-    
-    # Reset timeout counter
-    reset_timeout_counter(room)
-    
-    # Check if game is over
+
     if result.game_over:
-        room.complete_game()
         await send_game_over(update, context, room)
         return
-    
-    # Handle turn transition
-    if result.extra_turn:
-        room.keep_current_player()
-    else:
-        room.switch_player()
-    
-    # If PvE and bot's turn, make bot move
+
     if room.is_pve() and not room.is_player_turn(user.id):
         await make_bot_move(update, context, room)
     else:
-        # Send updated state to current player
         await send_game_state(update, context, room)
-        
-        # In PvP, also send to the OTHER player
+
         if not room.is_pve() and room.player_b_id:
             other_player_id = room.player_a_id if user.id == room.player_b_id else room.player_b_id
             await send_game_state_new_message(update, context, room, other_player_id)
 
 
-async def handle_numbered_edge_placement(
+async def handle_page_change(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    room: Room,
     callback,
 ) -> None:
-    """Handle player placing an edge via numeric input."""
+    """Handle pagination callbacks."""
     query = update.callback_query
     user = update.effective_user
-    
-    # Check game state
-    if room.state != RoomState.ACTIVE:
-        await query.answer(toast_transition_state(), show_alert=False)
+
+    player = get_player(user.id)
+    if not player or not player.current_room_id:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=None,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
         return
-    
-    # Check if it's player's turn
-    if not room.is_player_turn(user.id):
-        await query.answer(toast_not_your_turn(), show_alert=False)
+
+    room = get_room(player.current_room_id)
+    if not room:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=player.current_room_id,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
         return
-        
-    # Get edge ID from number
-    from game.edge_numbering import get_edge_by_number
-    edge_number = callback.edge_number
-    
-    if not edge_number:
-        await query.answer("Неверный номер грани ❌", show_alert=False)
+
+    if callback.version is None:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user.id,
+            reason="stale_callback",
+        )
+        await query.answer(toast_for_error("stale_callback"), show_alert=False)
         return
-        
-    edge_id = get_edge_by_number(room.board, edge_number)
-    
-    if not edge_id:
-        await query.answer("Грань не найдена ❌", show_alert=False)
+
+    if room.input_mode != "lines":
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user.id,
+            reason="action_rejected",
+        )
+        await query.answer(toast_for_error("action_rejected"), show_alert=False)
         return
-    
-    # Check if edge is already occupied
-    edge = room.board.get_edge(edge_id)
-    if edge and edge.is_occupied:
-        await query.answer(toast_occupied_edge(), show_alert=False)
+
+    try:
+        page = int(callback.param1) if callback.param1 is not None else None
+    except ValueError:
+        page = None
+
+    max_page = get_lines_max_page(room.board)
+    result = update_page(room, user.id, page, callback.version, max_page)
+    if not result.ok:
+        await query.answer(toast_for_error(result.error_code), show_alert=False)
         return
-    
-    # Apply the move
-    player_id_str = str(user.id)
-    other_player_str = str(room.other_player_id) if room.other_player_id else "bot"
-    
-    result = apply_turn(
-        board=room.board,
-        player_id=player_id_str,
-        edge_id=edge_id,
-        current_player=str(room.current_player_id),
-        other_player=other_player_str,
-    )
-    
-    if not result.success:
-        if result.error == TurnError.EDGE_OCCUPIED:
-            await query.answer(toast_occupied_edge(), show_alert=False)
-        else:
-            await query.answer("Что-то пошло не так 🤔", show_alert=False)
-        return
-    
-    # Move successful - acknowledge
+
     await query.answer()
-    
-    # Reset timeout counter
-    reset_timeout_counter(room)
-    
-    # Check if game is over
-    if result.game_over:
-        room.complete_game()
-        await send_game_over(update, context, room)
-        return
-    
-    # Handle turn transition
-    if result.extra_turn:
-        room.keep_current_player()
-    else:
-        room.switch_player()
-    
-    # If PvE and bot's turn, make bot move
-    if room.is_pve() and not room.is_player_turn(user.id):
-        await make_bot_move(update, context, room)
-    else:
-        # Send updated state to current player
-        await send_game_state(update, context, room)
-        
-        # In PvP, also send to the OTHER player
-        if not room.is_pve() and room.player_b_id:
-            other_player_id = room.player_a_id if user.id == room.player_b_id else room.player_b_id
-            await send_game_state_new_message(update, context, room, other_player_id)
+    await send_game_state(update, context, room)
 
 
 async def make_bot_move(
@@ -449,28 +410,24 @@ async def make_bot_move(
         
         logger.info(f"Bot chose edge: {edge_id}")
         
-        result = apply_turn(
-            board=room.board,
-            player_id="bot",
-            edge_id=edge_id,
-            current_player="bot",
-            other_player=str(room.player_a_id),
-        )
+        result = apply_bot_edge(room, edge_id)
         
-        if not result.success:
-            logger.warning(f"Bot move failed: {result.error}")
+        if not result.ok:
+            logger.warning(f"Bot move failed: {result.error_code}")
             break
         
         moves_made += 1
-        logger.info(f"Bot move #{moves_made} success. Captures: {len(result.captures)}, Extra turn: {result.extra_turn}")
+        captures = len(result.turn_result.captures) if result.turn_result else 0
+        extra_turn = result.turn_result.extra_turn if result.turn_result else False
+        logger.info(
+            f"Bot move #{moves_made} success. Captures: {captures}, Extra turn: {extra_turn}"
+        )
         
         if result.game_over:
-            room.complete_game()
             await send_game_over(update, context, room)
             return
-        
-        if not result.extra_turn:
-            room.switch_player()
+
+        if not result.turn_result or not result.turn_result.extra_turn:
             break
     
     logger.info(f"Bot finished. Made {moves_made} moves. Now player's turn.")
@@ -491,11 +448,12 @@ async def send_game_state(
     
     # Determine opponent name
     if room.is_pve():
-        difficulty_names = {"easy": "Лёгкий", "medium": "Средний", "hard": "Сложный"}
-        opponent = f"🤖 Бот ({difficulty_names.get(room.bot_difficulty, 'Средний')})"
+        opponent = BOT_NAME_TEMPLATE.format(
+            difficulty=BOT_DIFFICULTY_NAMES.get(room.bot_difficulty, BOT_DIFFICULTY_DEFAULT)
+        )
     else:
         opponent_player = get_player(room.other_player_id)
-        opponent = opponent_player.display_name if opponent_player else "Соперник"
+        opponent = opponent_player.display_name if opponent_player else OPPONENT_FALLBACK
     
     # Generate turn message
     if is_your_turn:
@@ -556,19 +514,21 @@ async def send_game_state(
     
     # Generate keyboard
     if room.input_mode == "numbered":
-        keyboard = numbered_edge_keyboard(room.board)
+        keyboard = numbered_edge_keyboard(room.board, room.state_version)
     elif room.input_mode == "lines":
         keyboard = lines_keyboard(
-            room.board, 
+            room.board,
             player_a_id=player_a_str,
-            player_b_id=player_b_str, 
-            page=room.current_page
+            state_version=room.state_version,
+            player_b_id=player_b_str,
+            page=room.current_page,
         )
     else:
         keyboard = game_board_keyboard(
             room.board,
             player_a_id=player_a_str,
             player_b_id=player_b_str,
+            state_version=room.state_version,
             player_emojis=player_emojis,
         )
     
@@ -578,13 +538,28 @@ async def send_game_state(
     except Exception:
         pass
     
-    sent_message = await context.bot.send_photo(
-        chat_id=user.id,
-        photo=io.BytesIO(image_bytes),
-        caption=message,
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
+    try:
+        sent_message = await context.bot.send_photo(
+            chat_id=user.id,
+            photo=io.BytesIO(image_bytes),
+            caption=message,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "delivery_failed",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user.id,
+            state_version=room.state_version,
+            move_number=room.move_number,
+            error=str(exc),
+        )
+        abandon_room(room, user.id, "delivery_failed")
+        return
     
     # Store message_id for future edits
     room.set_message_id(user.id, sent_message.message_id)
@@ -605,8 +580,9 @@ async def send_game_state_new_message(
     
     # Determine opponent name
     if room.is_pve():
-        difficulty_names = {"easy": "Лёгкий", "medium": "Средний", "hard": "Сложный"}
-        opponent = f"🤖 Бот ({difficulty_names.get(room.bot_difficulty, 'Средний')})"
+        opponent = BOT_NAME_TEMPLATE.format(
+            difficulty=BOT_DIFFICULTY_NAMES.get(room.bot_difficulty, BOT_DIFFICULTY_DEFAULT)
+        )
     else:
         # Get the OTHER player's info
         if user_is_player_a:
@@ -614,7 +590,7 @@ async def send_game_state_new_message(
         else:
             opponent_id = room.player_a_id
         opponent_player = get_player(opponent_id) if opponent_id else None
-        opponent = opponent_player.display_name if opponent_player else "Соперник"
+        opponent = opponent_player.display_name if opponent_player else OPPONENT_FALLBACK
     
     # Generate turn message
     if is_your_turn:
@@ -669,19 +645,21 @@ async def send_game_state_new_message(
     
     # Generate keyboard
     if room.input_mode == "numbered":
-        keyboard = numbered_edge_keyboard(room.board)
+        keyboard = numbered_edge_keyboard(room.board, room.state_version)
     elif room.input_mode == "lines":
         keyboard = lines_keyboard(
-            room.board, 
+            room.board,
             player_a_id=player_a_str,
-            player_b_id=player_b_str, 
-            page=room.current_page
+            state_version=room.state_version,
+            player_b_id=player_b_str,
+            page=room.current_page,
         )
     else:
         keyboard = game_board_keyboard(
             room.board,
             player_a_id=player_a_str,
             player_b_id=player_b_str,
+            state_version=room.state_version,
             player_emojis=player_emojis,
         )
     
@@ -707,13 +685,28 @@ async def send_game_state_new_message(
             # Fall through to send new message
     
     # Send new message and store its ID
-    sent_message = await context.bot.send_photo(
-        chat_id=user_id,
-        photo=io.BytesIO(image_bytes),
-        caption=message,
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
+    try:
+        sent_message = await context.bot.send_photo(
+            chat_id=user_id,
+            photo=io.BytesIO(image_bytes),
+            caption=message,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "delivery_failed",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user_id,
+            state_version=room.state_version,
+            move_number=room.move_number,
+            error=str(exc),
+        )
+        abandon_room(room, user_id, "delivery_failed")
+        return
     room.set_message_id(user_id, sent_message.message_id)
 
 
@@ -801,13 +794,26 @@ async def _send_game_over_to_player(
     # Clear player's room
     set_player_room(user_id, None)
     
-    await context.bot.send_photo(
-        chat_id=user_id,
-        photo=io.BytesIO(image_bytes),
-        caption=message,
-        parse_mode="HTML",
-        reply_markup=post_game_keyboard(can_rematch=True),
-    )
+    try:
+        await context.bot.send_photo(
+            chat_id=user_id,
+            photo=io.BytesIO(image_bytes),
+            caption=message,
+            parse_mode="HTML",
+            reply_markup=post_game_keyboard(can_rematch=True),
+        )
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "delivery_failed",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user_id,
+            state_version=room.state_version,
+            move_number=room.move_number,
+            error=str(exc),
+        )
 
 
 async def handle_rematch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -839,7 +845,7 @@ async def handle_rematch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_afk_choice(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    choice: str,
+    callback,
 ) -> None:
     """Handle AFK choice selection."""
     query = update.callback_query
@@ -847,15 +853,55 @@ async def handle_afk_choice(
     
     from telegram_pkg.keyboards import main_menu_keyboard
     from telegram_pkg.messages import MAIN_MENU_TITLE
-    
-    if choice == "bot":
-        # Continue with bot taking over opponent
-        # TODO: Implement bot takeover
-        pass
-    elif choice == "surrender":
-        # TODO: Implement surrender
-        pass
-    
+
+    player = get_player(user.id)
+    if not player or not player.current_room_id:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=None,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
+        return
+
+    room = get_room(player.current_room_id)
+    if not room:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=player.current_room_id,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
+        return
+
+    if callback.version is None or callback.version != room.state_version:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=room.id,
+            room_id=room.id,
+            user_id=user.id,
+            reason="stale_callback",
+            expected_version=callback.version,
+            state_version=room.state_version,
+        )
+        await query.answer(toast_for_error("stale_callback"), show_alert=False)
+        return
+
+    if callback.param1 == "surrender":
+        abandon_room(room, user.id, "afk_surrender")
+    else:
+        abandon_room(room, user.id, "afk_continue_unavailable")
+
     await query.edit_message_text(
         MAIN_MENU_TITLE,
         parse_mode="Markdown",
@@ -873,8 +919,31 @@ async def handle_leave_game(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if player and player.current_room_id:
         room = get_room(player.current_room_id)
         if room:
-            room.state = RoomState.ABANDONED
-            logger.info(f"Player {user.id} left game {room.id}")
+            abandon_room(room, user.id, "player_left")
+        else:
+            log_event(
+                logger,
+                logging.WARNING,
+                "action_rejected",
+                game_id=None,
+                room_id=player.current_room_id,
+                user_id=user.id,
+                reason="room_not_found",
+            )
+            await query.answer(toast_for_error("room_not_found"), show_alert=False)
+            return
+    else:
+        log_event(
+            logger,
+            logging.WARNING,
+            "action_rejected",
+            game_id=None,
+            room_id=None,
+            user_id=user.id,
+            reason="room_not_found",
+        )
+        await query.answer(toast_for_error("room_not_found"), show_alert=False)
+        return
     
     # Clear player's room
     set_player_room(user.id, None)
@@ -889,7 +958,7 @@ async def handle_leave_game(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     await context.bot.send_message(
         chat_id=user.id,
-        text="👋 Вы покинули игру.\n\n" + MAIN_MENU_TITLE,
+        text=LEAVE_GAME_MESSAGE.format(main_menu=MAIN_MENU_TITLE),
         parse_mode="Markdown",
         reply_markup=main_menu_keyboard(),
     )
