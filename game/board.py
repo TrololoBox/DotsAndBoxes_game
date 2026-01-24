@@ -181,6 +181,8 @@ class Board:
         return len(self.edges)
 
 
-def create_board(size: int) -> Board:
-    """Create a square board of given size."""
+def create_board(size: int, width: Optional[int] = None, height: Optional[int] = None) -> Board:
+    """Create a board. If width/height are provided, use them; else create square of size."""
+    if width is not None and height is not None:
+        return Board(width=width, height=height)
     return Board(width=size, height=size)

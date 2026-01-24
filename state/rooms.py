@@ -33,10 +33,17 @@ class Room:
     """Game room containing match state."""
     id: str
     mode: GameMode
-    board_size: int
+    board_size: int  # Raw size code (e.g. 3, 4, 10304)
+    player_a_id: int  # Telegram ID
+    
+    # Board dimensions (derived from board_size)
+    board_width: int = 3
+    board_height: int = 3
+    
+    # Input mode: "classic" (grid) or "numbered" (keypad)
+    input_mode: str = "classic"
     
     # Players
-    player_a_id: int  # Telegram ID
     player_b_id: Optional[int] = None  # None for pending PvP or PvE bot
     
     # PvE specific
@@ -50,7 +57,12 @@ class Room:
     # Player customization (cached at game start)
     player_a_emoji: str = "😀"
     player_b_emoji: str = "😎"
+    player_a_emoji: str = "😀"
+    player_b_emoji: str = "😎"
     theme: str = "classic"
+    
+    # UI State
+    current_page: int = 0  # For paginated keyboards (lines mode)
     
     # Turn tracking
     consecutive_timeouts_a: int = 0
@@ -69,8 +81,10 @@ class Room:
     message_b_id: Optional[int] = None  # Player B's game message ID
     
     def __post_init__(self):
+        # Calculate dimensions and mode if not set properly (e.g. init from raw size)
+        # Note: create_room handles this explicitly, but good for safety
         if self.board is None and self.state != RoomState.PENDING:
-            self.board = create_board(self.board_size)
+            self.board = create_board(self.board_size, width=self.board_width, height=self.board_height)
     
     @property
     def current_player_id(self) -> Optional[int]:
@@ -97,7 +111,7 @@ class Room:
     
     def start_game(self) -> None:
         """Initialize and start the game."""
-        self.board = create_board(self.board_size)
+        self.board = create_board(self.board_size, width=self.board_width, height=self.board_height)
         self.state = RoomState.ACTIVE
         self.turn_started_at = datetime.now()
     
@@ -152,10 +166,40 @@ def create_room(
     """Create a new game room."""
     room_id = str(uuid.uuid4())[:8]
     
+    # Decode board size and mode
+    if board_size > 100:
+        # Encoded: 10304 -> 3x4
+        w = int((board_size - 10000) / 100)
+        h = board_size % 100
+        width = w
+        height = h
+    else:
+        width = board_size
+        height = board_size
+        
+    # Determine input mode
+    # Telegram inline keyboard limit is 8 columns.
+    # Grid columns = 2 * width + 1.
+    grid_cols = 2 * width + 1
+    
+    # Specific override for 5x5 and 6x6 (lines mode)
+    if width in [5, 6] and height in [5, 6]:
+        input_mode = "lines"
+    # 4x4 allows classic mode (try to fit)
+    elif width == 4 and height == 4:
+        input_mode = "classic"
+    elif grid_cols > 9: # Allow 9 columns for 4x4 classic (may require testing)
+        input_mode = "numbered"
+    else:
+        input_mode = "classic"
+    
     room = Room(
         id=room_id,
         mode=mode,
         board_size=board_size,
+        board_width=width,
+        board_height=height,
+        input_mode=input_mode,
         player_a_id=player_a_id,
         player_b_id=player_b_id,
         bot_difficulty=bot_difficulty,

@@ -29,6 +29,7 @@ PENDING_SIZE_KEY = "pending_size"
 async def play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle play-related callbacks."""
     query = update.callback_query
+    print(f"DEBUG: play_callback called with {query.data}")
     await query.answer()
     
     user = update.effective_user
@@ -90,6 +91,16 @@ async def handle_size_selection(
     
     mode = context.user_data.get(PENDING_MODE_KEY, "pve")
     context.user_data[PENDING_SIZE_KEY] = size
+    
+    # Check for numbered mode
+    width = int((size - 10000) / 100) if size > 100 else size
+    is_numbered = (2 * width + 1) > 8
+    
+    if is_numbered:
+        await query.answer(
+            "ℹ️ Большое поле: Активирован режим ввода по номерам!",
+            show_alert=True
+        )
     
     if mode == "pve":
         # Show difficulty selection for PvE
@@ -155,10 +166,16 @@ async def handle_difficulty_selection(
     
     # Start the game
     room.start_game()
+    logger.info(f"Room {room.id} started. Sending initial state.")
     
     # Import here to avoid circular import
     from bot.handlers.game import send_game_state
-    await send_game_state(update, context, room)
+    try:
+        await send_game_state(update, context, room)
+        logger.info("Initial state sent successfully.")
+    except Exception as e:
+        logger.error(f"Failed to send game state: {e}", exc_info=True)
+        await query.answer("Ошибка запуска игры!", show_alert=True)
 
 
 async def handle_cancel_queue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

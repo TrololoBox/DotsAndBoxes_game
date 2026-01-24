@@ -77,15 +77,19 @@ class BoardRenderer:
         y = self.config.margin + row * self.config.cell_size + self.config.cell_size // 2
         return x, y
     
-    def render(self) -> bytes:
+    def render(self, show_numbers: bool = False) -> bytes:
         """
         Render the board to PNG bytes.
+        
+        Args:
+            show_numbers: If True, draw edge numbers on free edges
         
         Returns:
             PNG image as bytes
         """
-        # Create image with background
-        image = Image.new('RGB', (self.width, self.height), self.theme.background_rgb)
+        # Create image with background (RGBA to support transparency)
+        bg_color = self.theme.background_rgb + (255,)
+        image = Image.new('RGBA', (self.width, self.height), bg_color)
         draw = ImageDraw.Draw(image)
         
         # Draw layers in order
@@ -94,10 +98,74 @@ class BoardRenderer:
         self._draw_dots(draw)
         self._draw_emojis(draw, image)
         
-        # Convert to PNG bytes
+        # Draw edge numbers if in numbered mode
+        if show_numbers:
+            self._draw_edge_numbers(draw)
+        
+        # Convert to RGB for final output (drop alpha) if needed, 
+        # but PNG supports RGBA. Telegram handles it fine.
+        
         buffer = io.BytesIO()
         image.save(buffer, format='PNG')
         return buffer.getvalue()
+    
+    def _draw_edge_numbers(self, draw: ImageDraw.Draw) -> None:
+        """Draw numbers on free edges for numbered input mode."""
+        from game.edge_numbering import get_edge_numbers
+        
+        edge_numbers = get_edge_numbers(self.board)
+        
+        # Try to load a font, fall back to default
+        try:
+            # Increased font size
+            font = ImageFont.truetype("arial.ttf", 24)
+        except Exception:
+            font = ImageFont.load_default()
+        
+        for edge_id, number in edge_numbers.items():
+            edge = self.board.get_edge(edge_id)
+            if edge is None or edge.is_occupied:
+                continue  # Don't draw numbers on occupied edges
+            
+            # Calculate center position of edge
+            if edge.orientation.value == "h":
+                # Horizontal edge
+                x1, y1 = self._get_dot_position(edge.row, edge.col)
+                x2, y2 = self._get_dot_position(edge.row, edge.col + 1)
+            else:
+                # Vertical edge
+                x1, y1 = self._get_dot_position(edge.row, edge.col)
+                x2, y2 = self._get_dot_position(edge.row + 1, edge.col)
+            
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            
+            text = str(number)
+            
+            # Colors with transparency
+            outline_color = (0, 0, 0, 140)  # Semi-transparent black
+            fill_color = (255, 255, 255, 180)  # Semi-transparent white
+            
+            # Draw text with outline for visibility
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx != 0 or dy != 0:
+                        draw.text(
+                            (center_x + dx, center_y + dy),
+                            text,
+                            fill=outline_color,
+                            font=font,
+                            anchor="mm",
+                        )
+            
+            # Main text
+            draw.text(
+                (center_x, center_y),
+                text,
+                fill=fill_color,
+                font=font,
+                anchor="mm",
+            )
     
     def _draw_dots(self, draw: ImageDraw.Draw) -> None:
         """Draw dots at grid intersections."""
@@ -181,6 +249,7 @@ def render_board(
     player_a_id: str = "player_a",
     player_b_id: str = "player_b",
     player_emojis: Optional[Dict[str, str]] = None,
+    show_numbers: bool = False,
 ) -> bytes:
     """
     Convenience function to render a board.
@@ -191,6 +260,7 @@ def render_board(
         player_a_id: ID of first player
         player_b_id: ID of second player
         player_emojis: Map of player IDs to emojis
+        show_numbers: If True, draw edge numbers for numbered input mode
     
     Returns:
         PNG image as bytes
@@ -203,4 +273,5 @@ def render_board(
         player_b_id=player_b_id,
         player_emojis=player_emojis,
     )
-    return renderer.render()
+    return renderer.render(show_numbers=show_numbers)
+

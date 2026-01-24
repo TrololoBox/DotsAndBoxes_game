@@ -30,6 +30,7 @@ class CallbackAction(Enum):
     # In-game
     EDGE = "e"  # Edge placement
     NOOP = "noop"  # Non-interactive cells
+    NUM = "num"  # Numeric input for numbered mode
     
     # Post-game
     REMATCH = "rm"
@@ -42,6 +43,9 @@ class CallbackAction(Enum):
     
     # Invite
     INVITE = "inv"
+    
+    # Pagination
+    PAGE = "pg"
 
 
 @dataclass
@@ -68,12 +72,16 @@ class ParsedCallback:
         return self.action == CallbackAction.EDGE
     
     @property
+    def is_num(self) -> bool:
+        return self.action == CallbackAction.NUM
+    
+    @property
     def is_noop(self) -> bool:
         return self.action == CallbackAction.NOOP
     
     @property
     def noop_reason(self) -> Optional[str]:
-        """Get reason for noop callback (dot, square, occupied)."""
+        """Get reason for noop callback (dot, square, occupied, ad)."""
         if self.is_noop:
             return self.param1
         return None
@@ -98,6 +106,16 @@ class ParsedCallback:
         if self.is_edge and self.param3:
             return int(self.param3)
         return None
+    
+    @property
+    def edge_number(self) -> Optional[int]:
+        """Get edge number for numbered mode."""
+        if self.is_num and self.param1:
+            try:
+                return int(self.param1)
+            except ValueError:
+                pass
+        return None
 
 
 def parse_callback(data: str) -> ParsedCallback:
@@ -107,7 +125,14 @@ def parse_callback(data: str) -> ParsedCallback:
     try:
         action = CallbackAction(parts[0])
     except ValueError:
-        action = CallbackAction.NOOP
+        # Fallback for 'leave' command which doesn't fit standard format well
+        if parts[0] == 'leave':
+             # Treat 'leave' as a special case or map to existing action?
+             # For now, let's just let it be parsed if possible or return NOOP
+             # Ideally 'leave' should have its own action type
+             action = CallbackAction.NOOP
+        else:
+            action = CallbackAction.NOOP
     
     params = parts[1:] if len(parts) > 1 else []
     
@@ -169,3 +194,13 @@ def cb_cancel_queue() -> str:
 def cb_afk(choice: str) -> str:
     """Generate AFK choice callback."""
     return f"afk:{choice}"
+
+
+def cb_num(number: int) -> str:
+    """Generate numeric input callback."""
+    return f"num:{number}"
+
+
+def cb_page(page: int) -> str:
+    """Generate pagination callback."""
+    return f"pg:{page}"

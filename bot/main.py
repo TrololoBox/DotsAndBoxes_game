@@ -33,7 +33,13 @@ def main() -> None:
     # In-game actions (edges, noop, rematch, afk, leave)
     # e:h:r:c for horizontal edges, e:v:r:c for vertical edges
     # noop:reason for non-clickable cells
-    application.add_handler(CallbackQueryHandler(game_callback, pattern=r"^(e:|noop:|rm|afk:|leave)"))
+    application.add_handler(CallbackQueryHandler(game_callback, pattern=r"^(e:|noop:|rm|afk:|leave|num:|pg:)"))
+    
+    async def unhandled_callback(update: Update, context) -> None:
+        print(f"DEBUG: Unhandled callback: {update.callback_query.data}")
+        await update.callback_query.answer()
+        
+    application.add_handler(CallbackQueryHandler(unhandled_callback))
     
     # Start polling
     logger.info("Bot is running. Press Ctrl+C to stop.")

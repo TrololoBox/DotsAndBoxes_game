@@ -11,10 +11,14 @@ from telegram import Update, InputFile
 from telegram.ext import ContextTypes
 
 from telegram_pkg.callback_parser import parse_callback, CallbackAction, matrix_to_edge_id
-from telegram_pkg.keyboards import game_board_keyboard, post_game_keyboard, afk_choice_keyboard
+from telegram_pkg.keyboards import (
+    game_board_keyboard, numbered_edge_keyboard, lines_keyboard,
+    post_game_keyboard, afk_choice_keyboard
+)
 from telegram_pkg.messages import (
     GAME_STATUS, YOUR_TURN, OPPONENT_TURN, BOT_TURN,
     CAPTURE_SINGLE, CAPTURE_DOUBLE, GAME_OVER_WIN, GAME_OVER_LOSE, GAME_OVER_DRAW,
+    NUMBERED_MODE_HELP
 )
 from telegram_pkg.toasts import (
     toast_occupied_edge, toast_tap_dot, toast_tap_square,
@@ -57,6 +61,37 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     if callback.action == CallbackAction.EDGE:
         await handle_edge_placement(update, context, callback)
+        return
+    
+    elif callback.is_num:
+        # Get player's current room
+        player = get_player(user.id)
+        if not player or not player.current_room_id:
+            await query.answer(toast_game_finished(), show_alert=False)
+            return
+        room = get_room(player.current_room_id)
+        if not room:
+            await query.answer(toast_game_finished(), show_alert=False)
+            return
+        await handle_numbered_edge_placement(update, context, room, callback)
+        return
+        
+    elif callback.action == CallbackAction.PAGE:
+        # Update page and refresh
+        try:
+            page = int(callback.param1)
+            room = get_room(get_player(user.id).current_room_id) # Need to get room here
+            if room:
+                room.current_page = page
+                # We must answer callback to stop loading animation
+                await query.answer()
+                # Resend state (or edit markup if possible, but send_game_state handles full refresh)
+                await send_game_state(update, context, room)
+            else:
+                await query.answer(toast_game_finished(), show_alert=False)
+        except Exception as e:
+            logger.error(f"Error handling page callback: {e}")
+            await query.answer("Ошибка!", show_alert=True)
         return
     
     if callback.action == CallbackAction.REMATCH:
@@ -200,6 +235,197 @@ async def handle_edge_placement(
             await send_game_state_new_message(update, context, room, other_player_id)
 
 
+async def handle_numbered_edge_placement(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    callback,
+) -> None:
+    """Handle player placing an edge via numeric input."""
+    query = update.callback_query
+    user = update.effective_user
+    
+    # Get player's current room
+    player = get_player(user.id)
+    if not player or not player.current_room_id:
+        await query.answer(toast_game_finished(), show_alert=False)
+        return
+    
+    room = get_room(player.current_room_id)
+    if not room:
+        await query.answer(toast_game_finished(), show_alert=False)
+        return
+    
+    # Check game state
+    if room.state != RoomState.ACTIVE:
+        await query.answer(toast_transition_state(), show_alert=False)
+        return
+    
+    # Check if it's player's turn
+    if not room.is_player_turn(user.id):
+        await query.answer(toast_not_your_turn(), show_alert=False)
+        return
+        
+    # Get edge ID from number
+    from game.edge_numbering import get_edge_by_number
+    edge_number = callback.edge_number
+    
+    if not edge_number:
+        await query.answer("Неверный номер грани ❌", show_alert=False)
+        return
+        
+    edge_id = get_edge_by_number(room.board, edge_number)
+    
+    if not edge_id:
+        await query.answer("Грань не найдена ❌", show_alert=False)
+        return
+    
+    # Check if edge is already occupied
+    edge = room.board.get_edge(edge_id)
+    if edge and edge.is_occupied:
+        await query.answer(toast_occupied_edge(), show_alert=False)
+        return
+    
+    # Apply the move (reuse logic implicitly by creating result manually or calling apply_turn)
+    # Apply the move
+    player_id_str = str(user.id)
+    other_player_str = str(room.other_player_id) if room.other_player_id else "bot"
+    
+    result = apply_turn(
+        board=room.board,
+        player_id=player_id_str,
+        edge_id=edge_id,
+        current_player=str(room.current_player_id),
+        other_player=other_player_str,
+    )
+    
+    if not result.success:
+        if result.error == TurnError.EDGE_OCCUPIED:
+            await query.answer(toast_occupied_edge(), show_alert=False)
+        else:
+            await query.answer("Что-то пошло не так 🤔", show_alert=False)
+        return
+    
+    # Move successful - acknowledge
+    await query.answer()
+    
+    # Reset timeout counter
+    reset_timeout_counter(room)
+    
+    # Check if game is over
+    if result.game_over:
+        room.complete_game()
+        await send_game_over(update, context, room)
+        return
+    
+    # Handle turn transition
+    if result.extra_turn:
+        room.keep_current_player()
+    else:
+        room.switch_player()
+    
+    # If PvE and bot's turn, make bot move
+    if room.is_pve() and not room.is_player_turn(user.id):
+        await make_bot_move(update, context, room)
+    else:
+        # Send updated state to current player
+        await send_game_state(update, context, room)
+        
+        # In PvP, also send to the OTHER player
+        if not room.is_pve() and room.player_b_id:
+            other_player_id = room.player_a_id if user.id == room.player_b_id else room.player_b_id
+            await send_game_state_new_message(update, context, room, other_player_id)
+
+
+async def handle_numbered_edge_placement(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    room: Room,
+    callback,
+) -> None:
+    """Handle player placing an edge via numeric input."""
+    query = update.callback_query
+    user = update.effective_user
+    
+    # Check game state
+    if room.state != RoomState.ACTIVE:
+        await query.answer(toast_transition_state(), show_alert=False)
+        return
+    
+    # Check if it's player's turn
+    if not room.is_player_turn(user.id):
+        await query.answer(toast_not_your_turn(), show_alert=False)
+        return
+        
+    # Get edge ID from number
+    from game.edge_numbering import get_edge_by_number
+    edge_number = callback.edge_number
+    
+    if not edge_number:
+        await query.answer("Неверный номер грани ❌", show_alert=False)
+        return
+        
+    edge_id = get_edge_by_number(room.board, edge_number)
+    
+    if not edge_id:
+        await query.answer("Грань не найдена ❌", show_alert=False)
+        return
+    
+    # Check if edge is already occupied
+    edge = room.board.get_edge(edge_id)
+    if edge and edge.is_occupied:
+        await query.answer(toast_occupied_edge(), show_alert=False)
+        return
+    
+    # Apply the move
+    player_id_str = str(user.id)
+    other_player_str = str(room.other_player_id) if room.other_player_id else "bot"
+    
+    result = apply_turn(
+        board=room.board,
+        player_id=player_id_str,
+        edge_id=edge_id,
+        current_player=str(room.current_player_id),
+        other_player=other_player_str,
+    )
+    
+    if not result.success:
+        if result.error == TurnError.EDGE_OCCUPIED:
+            await query.answer(toast_occupied_edge(), show_alert=False)
+        else:
+            await query.answer("Что-то пошло не так 🤔", show_alert=False)
+        return
+    
+    # Move successful - acknowledge
+    await query.answer()
+    
+    # Reset timeout counter
+    reset_timeout_counter(room)
+    
+    # Check if game is over
+    if result.game_over:
+        room.complete_game()
+        await send_game_over(update, context, room)
+        return
+    
+    # Handle turn transition
+    if result.extra_turn:
+        room.keep_current_player()
+    else:
+        room.switch_player()
+    
+    # If PvE and bot's turn, make bot move
+    if room.is_pve() and not room.is_player_turn(user.id):
+        await make_bot_move(update, context, room)
+    else:
+        # Send updated state to current player
+        await send_game_state(update, context, room)
+        
+        # In PvP, also send to the OTHER player
+        if not room.is_pve() and room.player_b_id:
+            other_player_id = room.player_a_id if user.id == room.player_b_id else room.player_b_id
+            await send_game_state_new_message(update, context, room, other_player_id)
+
+
 async def make_bot_move(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -310,6 +536,9 @@ async def send_game_state(
         turn_message=turn_msg,
     )
     
+    if room.input_mode == "numbered":
+        message += "\n" + NUMBERED_MODE_HELP
+    
     # Render board image
     player_emojis = {
         player_a_str: room.player_a_emoji,
@@ -322,15 +551,26 @@ async def send_game_state(
         player_a_id=player_a_str,
         player_b_id=player_b_str,
         player_emojis=player_emojis,
+        show_numbers=(room.input_mode in ["numbered", "lines"]),
     )
     
     # Generate keyboard
-    keyboard = game_board_keyboard(
-        room.board,
-        player_a_id=player_a_str,
-        player_b_id=player_b_str,
-        player_emojis=player_emojis,
-    )
+    if room.input_mode == "numbered":
+        keyboard = numbered_edge_keyboard(room.board)
+    elif room.input_mode == "lines":
+        keyboard = lines_keyboard(
+            room.board, 
+            player_a_id=player_a_str,
+            player_b_id=player_b_str, 
+            page=room.current_page
+        )
+    else:
+        keyboard = game_board_keyboard(
+            room.board,
+            player_a_id=player_a_str,
+            player_b_id=player_b_str,
+            player_emojis=player_emojis,
+        )
     
     # Delete old message and send new one with image and keyboard
     try:
@@ -409,6 +649,9 @@ async def send_game_state_new_message(
         turn_message=turn_msg,
     )
     
+    if room.input_mode == "numbered":
+        message += "\n" + NUMBERED_MODE_HELP
+    
     # Render board image
     player_emojis = {
         player_a_str: room.player_a_emoji,
@@ -421,15 +664,26 @@ async def send_game_state_new_message(
         player_a_id=player_a_str,
         player_b_id=player_b_str,
         player_emojis=player_emojis,
+        show_numbers=(room.input_mode in ["numbered", "lines"]),
     )
     
     # Generate keyboard
-    keyboard = game_board_keyboard(
-        room.board,
-        player_a_id=player_a_str,
-        player_b_id=player_b_str,
-        player_emojis=player_emojis,
-    )
+    if room.input_mode == "numbered":
+        keyboard = numbered_edge_keyboard(room.board)
+    elif room.input_mode == "lines":
+        keyboard = lines_keyboard(
+            room.board, 
+            player_a_id=player_a_str,
+            player_b_id=player_b_str, 
+            page=room.current_page
+        )
+    else:
+        keyboard = game_board_keyboard(
+            room.board,
+            player_a_id=player_a_str,
+            player_b_id=player_b_str,
+            player_emojis=player_emojis,
+        )
     
     # Try to edit existing message, or send new one
     existing_msg_id = room.get_message_id(user_id)
