@@ -29,6 +29,18 @@ QUEUE_WAITING = """⏳ *Ищем соперника...*
 Немного терпения! Мы найдём тебе достойного противника."""
 
 QUEUE_FOUND = "🎉 Соперник найден! Начинаем игру..."
+QUEUE_ALREADY = "Вы уже в очереди!"
+QUEUE_NOT_FOUND = "Вы не в очереди."
+QUEUE_CANCELLED = "❌ Поиск отменён.\n\nВозвращаемся в меню..."
+LARGE_BOARD_INFO = "ℹ️ Большое поле: Активирован режим ввода по номерам!"
+GAME_START_ERROR = "Ошибка запуска игры!"
+OPPONENT_FALLBACK = "Соперник"
+BOT_NAME_TEMPLATE = "🤖 Бот ({difficulty})"
+BOT_DIFFICULTY_NAMES = {"easy": "Лёгкий", "medium": "Средний", "hard": "Сложный"}
+BOT_DIFFICULTY_DEFAULT = "Средний"
+BOT_EMOJI = "🤖"
+USERNAME_NOT_SET = "не указан"
+THEME_CLASSIC_NAME = "Классика"
 
 # Game in progress (HTML format to avoid Markdown issues with usernames)
 GAME_STATUS = """📊 <b>Счёт:</b> {your_emoji} {your_score} — {opponent_score} {opponent_emoji}
@@ -92,6 +104,24 @@ INVITE_CREATED = """👥 *Приглашение создано!*
 ⏳ Ссылка действительна 10 минут."""
 
 INVITE_EXPIRED = "❌ Приглашение истекло. Создай новое."
+INVITE_CREATED_HTML = """👥 <b>Приглашение создано!</b>
+
+Нажми кнопку ниже, чтобы пригласить друга, или отправь ссылку:
+<code>{link}</code>
+
+Код: <code>{code}</code>
+
+⏳ Ссылка действительна 10 минут."""
+INVITE_SHARE_TEXT = "🎮 Давай сыграем в Точки и Квадраты!\n{link}"
+INVITE_NOT_FOUND = """❌ *Приглашение не найдено*
+
+Возможно, оно истекло или уже использовано."""
+INVITE_ALREADY_STARTED = """❌ *Игра уже началась*
+
+Это приглашение уже было использовано."""
+INVITE_SELF_JOIN = """🤔 *Это ваше приглашение!*
+
+Отправьте ссылку другу, чтобы он присоединился."""
 
 # Profile
 PROFILE_TEMPLATE = """👤 *Профиль*
@@ -112,6 +142,8 @@ SUPPORT_MESSAGE = """💝 *Поддержать проект*
 Способы поддержки появятся позже.
 
 🚧 Раздел в разработке"""
+
+LEAVE_GAME_MESSAGE = "👋 Вы покинули игру.\n\n{main_menu}"
 
 # Errors
 ERROR_NOT_YOUR_TURN = "❌ Сейчас не твой ход!"
@@ -136,4 +168,6 @@ BTN_TO_MENU = "🏠 В меню"
 BTN_CONTINUE_BOT = "🤖 Продолжить с ботом"
 BTN_SURRENDER = "🏳️ Сдаться"
 BTN_CANCEL_QUEUE = "❌ Отменить поиск"
+BTN_CANCEL = "❌ Отменить"
+BTN_INVITE_FRIEND = "📤 Пригласить друга"
 BTN_WATCH_AD = "📺 Посмотреть рекламу"

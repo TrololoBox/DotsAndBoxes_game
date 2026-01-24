@@ -8,22 +8,23 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from bot.config import logger
+from telegram_pkg.messages import (
+    WELCOME_MESSAGE,
+    MAIN_MENU_TITLE,
+    PROFILE_TEMPLATE,
+    SETTINGS_TEMPLATE,
+    SUPPORT_MESSAGE,
+    INVITE_NOT_FOUND,
+    INVITE_ALREADY_STARTED,
+    INVITE_SELF_JOIN,
+    BTN_BACK,
+    USERNAME_NOT_SET,
+    THEME_CLASSIC_NAME,
+)
+from telegram_pkg.keyboards import main_menu_keyboard
 
 
 # Main menu keyboard layout
-def get_main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Generate the main menu inline keyboard."""
-    keyboard = [
-        [InlineKeyboardButton("🎮 Играть", callback_data="menu:play")],
-        [
-            InlineKeyboardButton("👤 Профиль", callback_data="menu:profile"),
-            InlineKeyboardButton("⚙️ Настройки", callback_data="menu:settings"),
-        ],
-        [InlineKeyboardButton("💝 Поддержать проект", callback_data="menu:support")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command."""
     user = update.effective_user
@@ -40,19 +41,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
     
     # Show main menu
-    welcome_text = (
-        f"👋 Привет, {user.first_name}!\n\n"
-        "🎯 *Точки и Квадраты* — классическая игра на бумаге, "
-        "теперь в Telegram!\n\n"
-        "Соедини точки линиями и захвати больше квадратов, "
-        "чем противник.\n\n"
-        "Выбери действие:"
-    )
-    
     await update.message.reply_text(
-        welcome_text,
+        WELCOME_MESSAGE.format(name=user.first_name),
         parse_mode="Markdown",
-        reply_markup=get_main_menu_keyboard(),
+        reply_markup=main_menu_keyboard(),
     )
 
 
@@ -60,6 +52,7 @@ async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE,
     """Handle player joining via invite link."""
     from state.rooms import get_room_by_invite, RoomState
     from state.players import get_or_create_player, set_player_room
+    from state.engine import start_game
     
     user = update.effective_user
     
@@ -68,27 +61,24 @@ async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     if not room:
         await update.message.reply_text(
-            "❌ *Приглашение не найдено*\n\n"
-            "Возможно, оно истекло или уже использовано.",
+            INVITE_NOT_FOUND,
             parse_mode="Markdown",
-            reply_markup=get_main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(),
         )
         return
     
-    if room.state != RoomState.PENDING:
+    if room.state != RoomState.WAITING:
         await update.message.reply_text(
-            "❌ *Игра уже началась*\n\n"
-            "Это приглашение уже было использовано.",
+            INVITE_ALREADY_STARTED,
             parse_mode="Markdown",
-            reply_markup=get_main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(),
         )
         return
     
     # Check if user is trying to join their own game
     if room.player_a_id == user.id:
         await update.message.reply_text(
-            "🤔 *Это ваше приглашение!*\n\n"
-            "Отправьте ссылку другу, чтобы он присоединился.",
+            INVITE_SELF_JOIN,
             parse_mode="Markdown",
         )
         return
@@ -101,7 +91,14 @@ async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE,
     set_player_room(user.id, room.id)
     
     # Start the game
-    room.start_game()
+    result = start_game(room)
+    if not result.ok:
+        await update.message.reply_text(
+            INVITE_ALREADY_STARTED,
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
     
     logger.info(f"Player {user.id} joined room {room.id} via invite. Game started!")
     
@@ -137,14 +134,10 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     if action == "main":
         # Return to main menu
-        text = (
-            "🎯 *Точки и Квадраты*\n\n"
-            "Выбери действие:"
-        )
         await query.edit_message_text(
-            text,
+            MAIN_MENU_TITLE,
             parse_mode="Markdown",
-            reply_markup=get_main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(),
         )
     
     elif action == "play":
@@ -161,38 +154,33 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == "profile":
         # TODO: Show profile
         await query.edit_message_text(
-            "👤 *Профиль*\n\n"
-            f"Имя: {user.first_name}\n"
-            f"Username: @{user.username or 'не указан'}\n"
-            "Эмодзи: 😀\n\n"
-            "🚧 Раздел в разработке",
+            PROFILE_TEMPLATE.format(
+                name=user.first_name,
+                username=f"@{user.username}" if user.username else USERNAME_NOT_SET,
+                emoji="😀",
+            ),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="menu:main")]
+                [InlineKeyboardButton(BTN_BACK, callback_data="menu:main")]
             ]),
         )
     
     elif action == "settings":
         # TODO: Show settings
         await query.edit_message_text(
-            "⚙️ *Настройки*\n\n"
-            "Тема: Классика\n\n"
-            "🚧 Раздел в разработке",
+            SETTINGS_TEMPLATE.format(theme=THEME_CLASSIC_NAME),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="menu:main")]
+                [InlineKeyboardButton(BTN_BACK, callback_data="menu:main")]
             ]),
         )
     
     elif action == "support":
         # TODO: Show support/donation
         await query.edit_message_text(
-            "💝 *Поддержать проект*\n\n"
-            "Спасибо за интерес к игре!\n"
-            "Способы поддержки появятся позже.\n\n"
-            "🚧 Раздел в разработке",
+            SUPPORT_MESSAGE,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="menu:main")]
+                [InlineKeyboardButton(BTN_BACK, callback_data="menu:main")]
             ]),
         )

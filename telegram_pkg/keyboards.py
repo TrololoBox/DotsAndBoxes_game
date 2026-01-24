@@ -27,17 +27,18 @@ from telegram_pkg.messages import (
 )
 from game.board import Board
 from game.edge_numbering import get_number_for_edge
+from game.lines_pagination import MAX_BUTTONS_PER_PAGE
 
 
 # Callback data generators for grid cells
-def cb_edge_h(r: int, c: int) -> str:
+def cb_edge_h(r: int, c: int, version: int) -> str:
     """Callback for horizontal edge at matrix position (r, c)."""
-    return f"e:h:{r}:{c}"
+    return f"e:h:{r}:{c}:{version}"
 
 
-def cb_edge_v(r: int, c: int) -> str:
+def cb_edge_v(r: int, c: int, version: int) -> str:
     """Callback for vertical edge at matrix position (r, c)."""
-    return f"e:v:{r}:{c}"
+    return f"e:v:{r}:{c}:{version}"
 
 
 def cb_noop(reason: str) -> str:
@@ -110,6 +111,7 @@ def game_board_keyboard(
     board: Board,
     player_a_id: str,
     player_b_id: str,
+    state_version: int,
     player_emojis: Optional[Dict[str, str]] = None,
 ) -> InlineKeyboardMarkup:
     """
@@ -160,7 +162,7 @@ def game_board_keyboard(
                     # Empty edge - clickable
                     row_buttons.append(InlineKeyboardButton(
                         SYM_EMPTY_H_EDGE,
-                        callback_data=cb_edge_h(r, c),
+                        callback_data=cb_edge_h(r, c, state_version),
                     ))
             
             elif not is_even_row and is_even_col:
@@ -184,7 +186,7 @@ def game_board_keyboard(
                     # Empty edge - clickable
                     row_buttons.append(InlineKeyboardButton(
                         SYM_EMPTY_V_EDGE,
-                        callback_data=cb_edge_v(r, c),
+                        callback_data=cb_edge_v(r, c, state_version),
                     ))
             
             else:
@@ -217,7 +219,7 @@ def game_board_keyboard(
     return InlineKeyboardMarkup(keyboard)
 
 
-def numbered_edge_keyboard(board: Board) -> InlineKeyboardMarkup:
+def numbered_edge_keyboard(board: Board, state_version: int) -> InlineKeyboardMarkup:
     """
     Generate numeric keypad for edge selection.
     
@@ -244,7 +246,7 @@ def numbered_edge_keyboard(board: Board) -> InlineKeyboardMarkup:
             text = "✓"
             callback = cb_noop("occupied")
         else:
-            callback = cb_num(number)
+            callback = cb_num(number, state_version)
         
         row.append(InlineKeyboardButton(text, callback_data=callback))
         
@@ -264,7 +266,13 @@ def numbered_edge_keyboard(board: Board) -> InlineKeyboardMarkup:
 
 
 
-def lines_keyboard(board: Board, player_a_id: str, player_b_id: Optional[str] = None, page: int = 0) -> InlineKeyboardMarkup:
+def lines_keyboard(
+    board: Board,
+    player_a_id: str,
+    state_version: int,
+    player_b_id: Optional[str] = None,
+    page: int = 0,
+) -> InlineKeyboardMarkup:
     """
     Generate keyboard with lines only (for large boards).
     Shows buttons as horizontal strips. Supports pagination.
@@ -283,10 +291,10 @@ def lines_keyboard(board: Board, player_a_id: str, player_b_id: Optional[str] = 
             if edge and edge.is_occupied:
                 text = SYM_EDGE_PLAYER_A if edge.owner == str(player_a_id) else SYM_EDGE_PLAYER_B
                 callback = cb_noop("occupied")
-            else:
-                number = get_number_for_edge(board, edge_id)
-                text = str(number) if number else "?"
-                callback = cb_edge_h(r*2, c*2+1) # matrix coords: r*2, c*2+1 for horizontal
+                else:
+                    number = get_number_for_edge(board, edge_id)
+                    text = str(number) if number else "?"
+                    callback = cb_edge_h(r*2, c*2+1, state_version) # matrix coords: r*2, c*2+1 for horizontal
             
             h_row.append(InlineKeyboardButton(text, callback_data=callback))
             
@@ -307,7 +315,7 @@ def lines_keyboard(board: Board, player_a_id: str, player_b_id: Optional[str] = 
                 else:
                     number = get_number_for_edge(board, edge_id)
                     text = str(number) if number else "?"
-                    callback = cb_edge_v(r*2+1, c*2) # matrix coords: r*2+1, c*2 for vertical
+                    callback = cb_edge_v(r*2+1, c*2, state_version) # matrix coords: r*2+1, c*2 for vertical
                 
                 v_row.append(InlineKeyboardButton(text, callback_data=callback))
                 
@@ -316,7 +324,6 @@ def lines_keyboard(board: Board, player_a_id: str, player_b_id: Optional[str] = 
                 all_rows.append(v_row[i:i+8])
     
     # 2. Pagination Logic
-    MAX_BUTTONS_PER_PAGE = 60 # Safe limit under 100
     pages = []
     current_page_rows = []
     current_page_buttons = 0
@@ -350,14 +357,14 @@ def lines_keyboard(board: Board, player_a_id: str, player_b_id: Optional[str] = 
     if len(pages) > 1:
         # Prev button
         if page > 0:
-            nav_row.append(InlineKeyboardButton("⬅️", callback_data=cb_page(page - 1)))
+            nav_row.append(InlineKeyboardButton("⬅️", callback_data=cb_page(page - 1, state_version)))
         
         # Page indicator
         nav_row.append(InlineKeyboardButton(f"{page + 1}/{len(pages)}", callback_data=cb_noop("page")))
         
         # Next button
         if page < len(pages) - 1:
-            nav_row.append(InlineKeyboardButton("➡️", callback_data=cb_page(page + 1)))
+            nav_row.append(InlineKeyboardButton("➡️", callback_data=cb_page(page + 1, state_version)))
             
         buttons.append(nav_row)
     
@@ -389,11 +396,11 @@ def post_game_keyboard(can_rematch: bool = True) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def afk_choice_keyboard() -> InlineKeyboardMarkup:
+def afk_choice_keyboard(state_version: int) -> InlineKeyboardMarkup:
     """AFK choice keyboard."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(BTN_CONTINUE_BOT, callback_data=cb_afk("bot"))],
-        [InlineKeyboardButton(BTN_SURRENDER, callback_data=cb_afk("surrender"))],
+        [InlineKeyboardButton(BTN_CONTINUE_BOT, callback_data=cb_afk("bot", state_version))],
+        [InlineKeyboardButton(BTN_SURRENDER, callback_data=cb_afk("surrender", state_version))],
     ])
 
 

@@ -5,8 +5,8 @@ Format: action:param1:param2:...
 Max length: 64 bytes (Telegram limit)
 
 EDGE CALLBACK FORMAT:
-- "e:h:<r>:<c>" for horizontal edges (matrix coordinates)
-- "e:v:<r>:<c>" for vertical edges (matrix coordinates)
+- "e:h:<r>:<c>:<v>" for horizontal edges (matrix coordinates)
+- "e:v:<r>:<c>:<v>" for vertical edges (matrix coordinates)
 
 NOOP CALLBACK FORMAT:
 - "noop:<reason>" where reason is: dot, square, occupied, ad
@@ -46,6 +46,9 @@ class CallbackAction(Enum):
     
     # Pagination
     PAGE = "pg"
+    
+    # Leave game
+    LEAVE = "leave"
 
 
 @dataclass
@@ -96,15 +99,15 @@ class ParsedCallback:
     @property
     def edge_matrix_row(self) -> Optional[int]:
         """Get matrix row of edge."""
-        if self.is_edge and self.param2:
-            return int(self.param2)
+        if self.is_edge:
+            return _parse_int(self.param2)
         return None
     
     @property
     def edge_matrix_col(self) -> Optional[int]:
         """Get matrix col of edge."""
-        if self.is_edge and self.param3:
-            return int(self.param3)
+        if self.is_edge:
+            return _parse_int(self.param3)
         return None
     
     @property
@@ -117,6 +120,19 @@ class ParsedCallback:
                 pass
         return None
 
+    @property
+    def version(self) -> Optional[int]:
+        """Get expected state version from callback data."""
+        if self.action == CallbackAction.EDGE and self.param4:
+            return _parse_int(self.param4)
+        if self.action in {CallbackAction.NUM, CallbackAction.PAGE, CallbackAction.AFK} and self.param2:
+            return _parse_int(self.param2)
+        return None
+
+    @property
+    def param4(self) -> Optional[str]:
+        return self.params[3] if len(self.params) > 3 else None
+
 
 def parse_callback(data: str) -> ParsedCallback:
     """Parse callback data string into structured format."""
@@ -126,17 +142,23 @@ def parse_callback(data: str) -> ParsedCallback:
         action = CallbackAction(parts[0])
     except ValueError:
         # Fallback for 'leave' command which doesn't fit standard format well
-        if parts[0] == 'leave':
-             # Treat 'leave' as a special case or map to existing action?
-             # For now, let's just let it be parsed if possible or return NOOP
-             # Ideally 'leave' should have its own action type
-             action = CallbackAction.NOOP
+        if parts[0] == "leave":
+            action = CallbackAction.LEAVE
         else:
             action = CallbackAction.NOOP
     
     params = parts[1:] if len(parts) > 1 else []
     
     return ParsedCallback(action=action, params=params, raw=data)
+
+
+def _parse_int(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def matrix_to_edge_id(edge_type: str, matrix_row: int, matrix_col: int) -> str:
@@ -191,16 +213,22 @@ def cb_cancel_queue() -> str:
     return "cq"
 
 
-def cb_afk(choice: str) -> str:
+def cb_afk(choice: str, version: Optional[int] = None) -> str:
     """Generate AFK choice callback."""
-    return f"afk:{choice}"
+    if version is None:
+        return f"afk:{choice}"
+    return f"afk:{choice}:{version}"
 
 
-def cb_num(number: int) -> str:
+def cb_num(number: int, version: Optional[int] = None) -> str:
     """Generate numeric input callback."""
-    return f"num:{number}"
+    if version is None:
+        return f"num:{number}"
+    return f"num:{number}:{version}"
 
 
-def cb_page(page: int) -> str:
+def cb_page(page: int, version: Optional[int] = None) -> str:
     """Generate pagination callback."""
-    return f"pg:{page}"
+    if version is None:
+        return f"pg:{page}"
+    return f"pg:{page}:{version}"

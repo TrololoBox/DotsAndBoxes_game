@@ -15,8 +15,10 @@ logger = logging.getLogger(__name__)
 
 
 # Cleanup thresholds
-PENDING_ROOM_TIMEOUT = timedelta(minutes=10)  # Pending rooms expire after 10 min
-COMPLETED_ROOM_TIMEOUT = timedelta(minutes=5)  # Completed rooms cleaned after 5 min
+WAITING_ROOM_TIMEOUT = timedelta(minutes=10)  # Waiting rooms expire after 10 min
+FINISHED_ROOM_TIMEOUT = timedelta(minutes=5)  # Finished rooms cleaned after 5 min
+ABORTED_ROOM_TIMEOUT = timedelta(minutes=5)  # Aborted rooms cleaned after 5 min
+ACTIVE_ROOM_IDLE_TIMEOUT = timedelta(minutes=30)  # Active rooms idle cleanup
 
 
 def cleanup_stale_rooms() -> int:
@@ -31,22 +33,29 @@ def cleanup_stale_rooms() -> int:
     for room in get_all_rooms():
         should_delete = False
         
-        # Check pending rooms that timed out
-        if room.state == RoomState.PENDING:
-            if now - room.created_at > PENDING_ROOM_TIMEOUT:
+        # Check waiting rooms that timed out
+        if room.state in {RoomState.CREATED, RoomState.WAITING}:
+            if now - room.created_at > WAITING_ROOM_TIMEOUT:
                 should_delete = True
-                logger.info(f"Cleaning up pending room {room.id} (timeout)")
-        
-        # Check completed rooms
-        elif room.state == RoomState.COMPLETED:
-            if room.completed_at and now - room.completed_at > COMPLETED_ROOM_TIMEOUT:
+                logger.info(f"Cleaning up pre-game room {room.id} (timeout)")
+
+        # Check idle active rooms
+        elif room.state == RoomState.ACTIVE:
+            if now - room.last_activity_at > ACTIVE_ROOM_IDLE_TIMEOUT:
                 should_delete = True
-                logger.info(f"Cleaning up completed room {room.id}")
+                logger.info(f"Cleaning up idle active room {room.id}")
         
-        # Check abandoned rooms
-        elif room.state == RoomState.ABANDONED:
-            should_delete = True
-            logger.info(f"Cleaning up abandoned room {room.id}")
+        # Check finished rooms
+        elif room.state == RoomState.FINISHED:
+            if room.completed_at and now - room.completed_at > FINISHED_ROOM_TIMEOUT:
+                should_delete = True
+                logger.info(f"Cleaning up finished room {room.id}")
+        
+        # Check aborted rooms
+        elif room.state == RoomState.ABORTED:
+            if room.completed_at and now - room.completed_at > ABORTED_ROOM_TIMEOUT:
+                should_delete = True
+                logger.info(f"Cleaning up aborted room {room.id}")
         
         if should_delete:
             # Release players from room
