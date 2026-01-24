@@ -232,10 +232,18 @@ async def create_friend_invite(
     
     # Generate invite link
     bot_username = (await context.bot.get_me()).username
-    invite_link = f"https://t.me/{bot_username}?start=invite_{room.invite_code}"
+    invite_link = f"https://t.me/{bot_username}?start=invite{room.invite_code}"
     
-    from telegram_pkg.messages import INVITE_CREATED
+    from html import escape
+    
+    invite_message = (
+        "👥 <b>Приглашение создано!</b>\n\n"
+        "Отправь эту ссылку другу:\n"
+        f"<a href=\"{escape(invite_link)}\">{escape(invite_link)}</a>\n\n"
+        f"Или код для ввода: <code>{escape(room.invite_code)}</code>\n\n"
+        "⏳ Ссылка действительна 10 минут."
+    )
     await query.edit_message_text(
-        INVITE_CREATED.format(link=invite_link, code=room.invite_code),
-        parse_mode="Markdown",
+        invite_message,
+        parse_mode="HTML",
     )

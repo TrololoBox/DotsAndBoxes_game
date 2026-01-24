@@ -31,13 +31,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     # Check for invite code in deep link
     args = context.args
-    if args and args[0].startswith("invite_"):
-        invite_code = args[0].replace("invite_", "")
-        logger.info(f"User {user.id} joining with invite code: {invite_code}")
-        
-        # Handle invite join
-        await handle_invite_join(update, context, invite_code)
-        return
+    if args:
+        invite_arg = args[0]
+        invite_code = _parse_invite_code(invite_arg)
+        if invite_code:
+            logger.info(f"User {user.id} joining with invite code: {invite_code}")
+            await handle_invite_join(update, context, invite_code)
+            return
     
     # Show main menu
     welcome_text = (
@@ -59,7 +59,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE, invite_code: str) -> None:
     """Handle player joining via invite link."""
     from state.rooms import get_room_by_invite, RoomState
-    from state.players import get_or_create_player, set_player_room, get_player
+    from state.players import get_or_create_player, set_player_room
     
     user = update.effective_user
     
@@ -105,15 +105,25 @@ async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     logger.info(f"Player {user.id} joined room {room.id} via invite. Game started!")
     
-    # Get player A info
-    player_a = get_player(room.player_a_id)
-    player_a_name = player_a.display_name if player_a else "Игрок"
-    
     # Send game state to joining player
     from bot.handlers.game import send_game_state_new_message
     await send_game_state_new_message(update, context, room, user.id)
     
-    # TODO: Notify player A that friend joined (requires storing their chat_id)
+    await send_game_state_new_message(update, context, room, room.player_a_id)
+
+
+def _parse_invite_code(invite_arg: str) -> str | None:
+    """Parse invite code from a /start deep link argument."""
+    if not invite_arg:
+        return None
+    normalized = invite_arg.strip()
+    if normalized.startswith("invite_"):
+        return normalized.replace("invite_", "", 1)
+    if normalized.startswith("invite-"):
+        return normalized.replace("invite-", "", 1)
+    if normalized.startswith("invite"):
+        return normalized.replace("invite", "", 1).lstrip("_-")
+    return None
 
 
 async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
