@@ -64,6 +64,10 @@ class Room:
     # Invite code for friend matches
     invite_code: Optional[str] = None
     
+    # Message IDs for editing (instead of sending new messages)
+    message_a_id: Optional[int] = None  # Player A's game message ID
+    message_b_id: Optional[int] = None  # Player B's game message ID
+    
     def __post_init__(self):
         if self.board is None and self.state != RoomState.PENDING:
             self.board = create_board(self.board_size)
@@ -115,6 +119,19 @@ class Room:
         if telegram_id == self.player_a_id:
             return self.player_a_emoji
         return self.player_b_emoji
+    
+    def set_message_id(self, telegram_id: int, message_id: int) -> None:
+        """Store message ID for a player."""
+        if telegram_id == self.player_a_id:
+            self.message_a_id = message_id
+        else:
+            self.message_b_id = message_id
+    
+    def get_message_id(self, telegram_id: int) -> Optional[int]:
+        """Get stored message ID for a player."""
+        if telegram_id == self.player_a_id:
+            return self.message_a_id
+        return self.message_b_id
 
 
 # In-memory room storage

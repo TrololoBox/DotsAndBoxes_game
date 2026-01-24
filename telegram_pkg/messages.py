@@ -30,36 +30,36 @@ QUEUE_WAITING = """⏳ *Ищем соперника...*
 
 QUEUE_FOUND = "🎉 Соперник найден! Начинаем игру..."
 
-# Game in progress
-GAME_STATUS = """📊 *Счёт:* {your_emoji} {your_score} — {opponent_score} {opponent_emoji}
+# Game in progress (HTML format to avoid Markdown issues with usernames)
+GAME_STATUS = """📊 <b>Счёт:</b> {your_emoji} {your_score} — {opponent_score} {opponent_emoji}
 
 🆚 Соперник: {opponent}
 
 {turn_message}"""
 
-YOUR_TURN = "🟢 *Твой ход!* Выбери грань на поле."
-OPPONENT_TURN = "🔴 *Ход соперника.* Подожди немного..."
-BOT_TURN = "🤖 *Бот думает...*"
+YOUR_TURN = "🟢 <b>Твой ход!</b> Выбери грань на поле."
+OPPONENT_TURN = "🔴 <b>Ход соперника.</b> Подожди немного..."
+BOT_TURN = "🤖 <b>Бот думает...</b>"
 
 # Captures
 CAPTURE_SINGLE = "✨ Отлично! Ты захватил 1 квадрат! Ходи ещё!"
 CAPTURE_DOUBLE = "🔥 Невероятно! 2 квадрата за один ход! Ходи ещё!"
 OPPONENT_CAPTURED = "Соперник захватил {count} квадрат(ов)."
 
-# Game over
-GAME_OVER_WIN = """🏆 *Победа!*
+# Game over (HTML format)
+GAME_OVER_WIN = """🏆 <b>Победа!</b>
 
 Поздравляем! Ты выиграл!
 Твой счёт: {your_score}
 Счёт соперника: {opponent_score}"""
 
-GAME_OVER_LOSE = """😔 *Поражение*
+GAME_OVER_LOSE = """😔 <b>Поражение</b>
 
 В этот раз не повезло, но не расстраивайся!
 Твой счёт: {your_score}
 Счёт соперника: {opponent_score}"""
 
-GAME_OVER_DRAW = """🤝 *Ничья!*
+GAME_OVER_DRAW = """🤝 <b>Ничья!</b>
 
 Отличная игра! Вы оба молодцы!
 Счёт: {score}:{score}"""

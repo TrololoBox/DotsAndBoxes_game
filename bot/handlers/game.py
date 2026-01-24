@@ -191,7 +191,13 @@ async def handle_edge_placement(
     if room.is_pve() and not room.is_player_turn(user.id):
         await make_bot_move(update, context, room)
     else:
+        # Send updated state to current player
         await send_game_state(update, context, room)
+        
+        # In PvP, also send to the OTHER player
+        if not room.is_pve() and room.player_b_id:
+            other_player_id = room.player_a_id if user.id == room.player_b_id else room.player_b_id
+            await send_game_state_new_message(update, context, room, other_player_id)
 
 
 async def make_bot_move(
@@ -332,13 +338,16 @@ async def send_game_state(
     except Exception:
         pass
     
-    await context.bot.send_photo(
+    sent_message = await context.bot.send_photo(
         chat_id=user.id,
         photo=io.BytesIO(image_bytes),
         caption=message,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=keyboard,
     )
+    
+    # Store message_id for future edits
+    room.set_message_id(user.id, sent_message.message_id)
 
 
 async def send_game_state_new_message(
@@ -347,8 +356,9 @@ async def send_game_state_new_message(
     room,
     user_id: int,
 ) -> None:
-    """Send game state as new message (for invite joins, not callback edits)."""
+    """Send or edit game state message for a player."""
     from game.capture import count_player_squares
+    from telegram import InputMediaPhoto
     
     is_your_turn = room.is_player_turn(user_id)
     user_is_player_a = user_id == room.player_a_id
@@ -358,7 +368,12 @@ async def send_game_state_new_message(
         difficulty_names = {"easy": "Лёгкий", "medium": "Средний", "hard": "Сложный"}
         opponent = f"🤖 Бот ({difficulty_names.get(room.bot_difficulty, 'Средний')})"
     else:
-        opponent_player = get_player(room.other_player_id if user_is_player_a else room.player_a_id)
+        # Get the OTHER player's info
+        if user_is_player_a:
+            opponent_id = room.player_b_id
+        else:
+            opponent_id = room.player_a_id
+        opponent_player = get_player(opponent_id) if opponent_id else None
         opponent = opponent_player.display_name if opponent_player else "Соперник"
     
     # Generate turn message
@@ -416,13 +431,36 @@ async def send_game_state_new_message(
         player_emojis=player_emojis,
     )
     
-    await context.bot.send_photo(
+    # Try to edit existing message, or send new one
+    existing_msg_id = room.get_message_id(user_id)
+    
+    if existing_msg_id:
+        try:
+            # Edit existing message with new photo and caption
+            await context.bot.edit_message_media(
+                chat_id=user_id,
+                message_id=existing_msg_id,
+                media=InputMediaPhoto(
+                    media=io.BytesIO(image_bytes),
+                    caption=message,
+                    parse_mode="HTML",
+                ),
+                reply_markup=keyboard,
+            )
+            return  # Success, no need to send new
+        except Exception as e:
+            logger.debug(f"Failed to edit message {existing_msg_id}: {e}")
+            # Fall through to send new message
+    
+    # Send new message and store its ID
+    sent_message = await context.bot.send_photo(
         chat_id=user_id,
         photo=io.BytesIO(image_bytes),
         caption=message,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=keyboard,
     )
+    room.set_message_id(user_id, sent_message.message_id)
 
 
 async def send_game_over(
@@ -430,7 +468,7 @@ async def send_game_over(
     context: ContextTypes.DEFAULT_TYPE,
     room: Room,
 ) -> None:
-    """Send game over message."""
+    """Send game over message to all players."""
     query = update.callback_query
     user = update.effective_user
     
@@ -444,8 +482,47 @@ async def send_game_over(
         player_b_id=player_b_str,
     )
     
-    # Determine message based on result
-    user_is_player_a = user.id == room.player_a_id
+    # Render final board once
+    player_emojis = {
+        player_a_str: room.player_a_emoji,
+        player_b_str: room.player_b_emoji,
+    }
+    
+    image_bytes = render_board(
+        board=room.board,
+        theme_name=room.theme,
+        player_a_id=player_a_str,
+        player_b_id=player_b_str,
+        player_emojis=player_emojis,
+    )
+    
+    # Delete the initiator's old message
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    
+    # Send to current user (who made the last move)
+    await _send_game_over_to_player(context, room, result, user.id, image_bytes)
+    
+    # In PvP, also send to the OTHER player
+    if not room.is_pve() and room.player_b_id:
+        other_player_id = room.player_a_id if user.id == room.player_b_id else room.player_b_id
+        await _send_game_over_to_player(context, room, result, other_player_id, image_bytes)
+
+
+async def _send_game_over_to_player(
+    context: ContextTypes.DEFAULT_TYPE,
+    room: Room,
+    result,
+    user_id: int,
+    image_bytes: bytes,
+) -> None:
+    """Send game over message to a specific player."""
+    player_a_str = str(room.player_a_id)
+    player_b_str = str(room.player_b_id) if room.player_b_id else "bot"
+    
+    user_is_player_a = user_id == room.player_a_id
     
     if result.is_draw:
         message = GAME_OVER_DRAW.format(score=result.player_a_score)
@@ -467,33 +544,14 @@ async def send_game_over(
             opponent_score = result.player_a_score
         message = GAME_OVER_LOSE.format(your_score=your_score, opponent_score=opponent_score)
     
-    # Render final board
-    player_emojis = {
-        player_a_str: room.player_a_emoji,
-        player_b_str: room.player_b_emoji,
-    }
-    
-    image_bytes = render_board(
-        board=room.board,
-        theme_name=room.theme,
-        player_a_id=player_a_str,
-        player_b_id=player_b_str,
-        player_emojis=player_emojis,
-    )
-    
     # Clear player's room
-    set_player_room(user.id, None)
-    
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
+    set_player_room(user_id, None)
     
     await context.bot.send_photo(
-        chat_id=user.id,
+        chat_id=user_id,
         photo=io.BytesIO(image_bytes),
         caption=message,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=post_game_keyboard(can_rematch=True),
     )
 

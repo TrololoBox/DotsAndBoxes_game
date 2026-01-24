@@ -232,18 +232,28 @@ async def create_friend_invite(
     
     # Generate invite link
     bot_username = (await context.bot.get_me()).username
-    invite_link = f"https://t.me/{bot_username}?start=invite{room.invite_code}"
+    invite_link = f"https://t.me/{bot_username}?start=invite_{room.invite_code}"
     
     from html import escape
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
     invite_message = (
         "👥 <b>Приглашение создано!</b>\n\n"
-        "Отправь эту ссылку другу:\n"
-        f"<a href=\"{escape(invite_link)}\">{escape(invite_link)}</a>\n\n"
-        f"Или код для ввода: <code>{escape(room.invite_code)}</code>\n\n"
+        f"Нажми кнопку ниже, чтобы пригласить друга, или отправь ссылку:\n"
+        f"<code>{escape(invite_link)}</code>\n\n"
+        f"Код: <code>{escape(room.invite_code)}</code>\n\n"
         "⏳ Ссылка действительна 10 минут."
     )
+    
+    # Share button - opens chat selection to share the link
+    share_text = f"🎮 Давай сыграем в Точки и Квадраты!\n{invite_link}"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Пригласить друга", switch_inline_query=share_text)],
+        [InlineKeyboardButton("❌ Отменить", callback_data="menu:main")],
+    ])
+    
     await query.edit_message_text(
         invite_message,
         parse_mode="HTML",
+        reply_markup=keyboard,
     )
