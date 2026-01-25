@@ -11,7 +11,7 @@ Cell type by coordinates (r, c):
 - SQUARE:   r%2==1 and c%2==1  -> 🟧/emoji (non-clickable)
 """
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from typing import Optional, Dict
 
 from telegram_pkg.callback_parser import (
@@ -64,6 +64,17 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton(BTN_SUPPORT, callback_data=cb_menu("support"))],
     ])
+
+
+def persistent_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Persistent bottom menu keyboard (can be collapsed by user)."""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📋 Меню"), KeyboardButton("💝 Поддержать")],
+            [KeyboardButton("🗑 Очистить чат")],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def play_mode_keyboard() -> InlineKeyboardMarkup:
@@ -379,7 +390,7 @@ def post_game_keyboard(can_rematch: bool = True) -> InlineKeyboardMarkup:
             InlineKeyboardButton(BTN_TO_MENU, callback_data=cb_menu("main")),
         ])
         buttons.append([
-            InlineKeyboardButton(BTN_WATCH_AD, callback_data=cb_noop("ad")),  # Stub
+            InlineKeyboardButton(BTN_WATCH_AD, url="https://otieu.com/4/10513519"),
         ])
     else:
         buttons.append([
@@ -394,6 +405,24 @@ def afk_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(BTN_CONTINUE_BOT, callback_data=cb_afk("bot"))],
         [InlineKeyboardButton(BTN_SURRENDER, callback_data=cb_afk("surrender"))],
+    ])
+
+
+def rematch_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Rematch confirmation keyboard for opponent."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Да", callback_data="rm:yes"),
+            InlineKeyboardButton("❌ Нет", callback_data="rm:no"),
+        ],
+    ])
+
+
+def rematch_waiting_keyboard() -> InlineKeyboardMarkup:
+    """Waiting for rematch response keyboard."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏳ Ожидаем ответ...", callback_data="noop:wait")],
+        [InlineKeyboardButton(BTN_TO_MENU, callback_data=cb_menu("main"))],
     ])
 
 

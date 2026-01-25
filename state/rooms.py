@@ -80,6 +80,9 @@ class Room:
     message_a_id: Optional[int] = None  # Player A's game message ID
     message_b_id: Optional[int] = None  # Player B's game message ID
     
+    # Rematch tracking
+    rematch_requester_id: Optional[int] = None  # Who requested rematch
+    
     def __post_init__(self):
         # Calculate dimensions and mode if not set properly (e.g. init from raw size)
         # Note: create_room handles this explicitly, but good for safety

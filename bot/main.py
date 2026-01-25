@@ -6,12 +6,57 @@ Run with: python -m bot.main
 
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from bot.config import BOT_TOKEN, logger
 from bot.handlers.start import start_command, main_menu_callback
 from bot.handlers.play import play_callback
 from bot.handlers.game import game_callback
+
+
+async def menu_text_handler(update: Update, context) -> None:
+    """Handle 'Меню' text message to show main menu."""
+    from telegram_pkg.keyboards import main_menu_keyboard
+    from telegram_pkg.messages import MAIN_MENU_TITLE
+    
+    await update.message.reply_text(
+        MAIN_MENU_TITLE,
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def support_handler(update: Update, context) -> None:
+    """Handle 'Поддержать' button (stub)."""
+    await update.message.reply_text(
+        "💝 *Поддержать проект*\n\n"
+        "Спасибо за интерес к игре!\n"
+        "Способы поддержки появятся позже.\n\n"
+        "🚧 Раздел в разработке",
+        parse_mode="Markdown",
+    )
+
+
+async def clear_chat_handler(update: Update, context) -> None:
+    """Handle 'Очистить чат' button - delete recent bot messages."""
+    await update.message.reply_text(
+        "🗑 *Очистка чата*\n\n"
+        "К сожалению, Telegram не позволяет ботам удалять все сообщения.\n"
+        "Вы можете очистить историю вручную:\n"
+        "• Откройте меню чата (три точки)\n"
+        "• Выберите «Очистить историю»",
+        parse_mode="Markdown",
+    )
+
+
+async def post_init(application) -> None:
+    """Set bot commands after initialization."""
+    from telegram import BotCommand
+    commands = [
+        BotCommand("start", "Главное меню"),
+        BotCommand("menu", "Показать меню"),
+    ]
+    await application.bot.set_my_commands(commands)
 
 
 def main() -> None:
@@ -21,8 +66,17 @@ def main() -> None:
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # Set bot commands on startup
+    application.post_init = post_init
+    
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("menu", start_command))
+    
+    # Handle reply keyboard buttons
+    application.add_handler(MessageHandler(filters.Regex(r"^📋 Меню$"), menu_text_handler))
+    application.add_handler(MessageHandler(filters.Regex(r"^💝 Поддержать$"), support_handler))
+    application.add_handler(MessageHandler(filters.Regex(r"^🗑 Очистить чат$"), clear_chat_handler))
     
     # Menu navigation
     application.add_handler(CallbackQueryHandler(main_menu_callback, pattern=r"^menu:"))

@@ -39,7 +39,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await handle_invite_join(update, context, invite_code)
             return
     
-    # Show main menu
+    # Import persistent keyboard
+    from telegram_pkg.keyboards import persistent_menu_keyboard
+    
+    # Show main menu with persistent reply keyboard
     welcome_text = (
         f"👋 Привет, {user.first_name}!\n\n"
         "🎯 *Точки и Квадраты* — классическая игра на бумаге, "
@@ -53,6 +56,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         welcome_text,
         parse_mode="Markdown",
         reply_markup=get_main_menu_keyboard(),
+    )
+    
+    # Send persistent bottom keyboard separately (it persists)
+    await update.message.reply_text(
+        "💡 Кнопка «Меню» всегда доступна внизу.",
+        reply_markup=persistent_menu_keyboard(),
     )
 
 

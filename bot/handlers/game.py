@@ -96,7 +96,11 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     if callback.action == CallbackAction.REMATCH:
         await query.answer()
-        await handle_rematch(update, context)
+        # Check if this is a rematch response (yes/no)
+        if callback.param1 in ["yes", "no"]:
+            await handle_rematch_response(update, context, callback.param1)
+        else:
+            await handle_rematch(update, context)
         return
     
     if callback.action == CallbackAction.AFK:
@@ -815,25 +819,175 @@ async def handle_rematch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     user = update.effective_user
     
-    # For now, return to menu
-    # TODO: Implement full rematch with room recreation
+    from telegram_pkg.keyboards import main_menu_keyboard, rematch_confirm_keyboard, rematch_waiting_keyboard
+    from telegram_pkg.messages import MAIN_MENU_TITLE
+    
+    # Get player's current room
+    player = get_player(user.id)
+    if not player or not player.current_room_id:
+        # No active room, just show menu
+        try:
+            await query.edit_message_caption(
+                caption=MAIN_MENU_TITLE,
+                parse_mode="Markdown",
+                reply_markup=main_menu_keyboard(),
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=MAIN_MENU_TITLE,
+                parse_mode="Markdown",
+                reply_markup=main_menu_keyboard(),
+            )
+        return
+    
+    room = get_room(player.current_room_id)
+    if not room:
+        await query.answer("Игра не найдена")
+        return
+    
+    # PvE: Just start a new game immediately
+    if room.is_pve():
+        # Create new room with same settings
+        from state.rooms import create_room
+        new_room = create_room(
+            mode=room.mode,
+            board_size=room.board_size,
+            player_a_id=user.id,
+            player_b_id=None,  # Bot
+            bot_difficulty=room.bot_difficulty,
+            player_a_emoji=room.player_a_emoji,
+            player_b_emoji="🤖",
+        )
+        new_room.start_game()
+        set_player_room(user.id, new_room.id)
+        
+        await query.answer("Начинаем новую игру!")
+        await send_game_state_new_message(update, context, new_room, user.id)
+        return
+    
+    # PvP: Check if already requested
+    if room.rematch_requester_id:
+        if room.rematch_requester_id == user.id:
+            await query.answer("Вы уже отправили запрос на реванш")
+            return
+        else:
+            # Other player already requested - this means both want rematch!
+            # Start new game
+            await _start_rematch_game(update, context, room)
+            return
+    
+    # Mark rematch request
+    room.rematch_requester_id = user.id
+    opponent_id = room.player_b_id if user.id == room.player_a_id else room.player_a_id
+    
+    # Update requester's message to "waiting"
+    try:
+        await query.edit_message_caption(
+            caption="⏳ *Ожидаем ответ противника...*",
+            parse_mode="Markdown",
+            reply_markup=rematch_waiting_keyboard(),
+        )
+    except Exception:
+        pass
+    
+    # Send rematch request to opponent
+    if opponent_id:
+        try:
+            await context.bot.send_message(
+                chat_id=opponent_id,
+                text=f"🔄 *Противник предлагает реванш!*\n\nХотите сыграть ещё раз?",
+                parse_mode="Markdown",
+                reply_markup=rematch_confirm_keyboard(),
+            )
+        except Exception as e:
+            logger.error(f"Failed to send rematch request to {opponent_id}: {e}")
+    
+    await query.answer("Запрос на реванш отправлен")
+
+
+async def handle_rematch_response(update: Update, context: ContextTypes.DEFAULT_TYPE, response: str) -> None:
+    """Handle rematch accept/decline response."""
+    query = update.callback_query
+    user = update.effective_user
     
     from telegram_pkg.keyboards import main_menu_keyboard
     from telegram_pkg.messages import MAIN_MENU_TITLE
     
-    try:
-        await query.edit_message_caption(
-            caption=MAIN_MENU_TITLE,
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(),
-        )
-    except Exception:
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=MAIN_MENU_TITLE,
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(),
-        )
+    player = get_player(user.id)
+    if not player or not player.current_room_id:
+        await query.answer("Игра не найдена")
+        return
+    
+    room = get_room(player.current_room_id)
+    if not room or not room.rematch_requester_id:
+        await query.answer("Запрос на реванш истёк")
+        return
+    
+    requester_id = room.rematch_requester_id
+    
+    if response == "yes":
+        # Accept - start new game
+        await query.answer("Начинаем реванш!")
+        await _start_rematch_game(update, context, room)
+    else:
+        # Decline
+        room.rematch_requester_id = None
+        
+        # Update decliner's message
+        try:
+            await query.edit_message_text(
+                MAIN_MENU_TITLE,
+                parse_mode="Markdown",
+                reply_markup=main_menu_keyboard(),
+            )
+        except Exception:
+            pass
+        
+        # Notify requester
+        if requester_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=requester_id,
+                    text="❌ *Противник отказался от реванша*",
+                    parse_mode="Markdown",
+                    reply_markup=main_menu_keyboard(),
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify requester {requester_id}: {e}")
+        
+        # Clear room association
+        clear_player_room(user.id)
+        if requester_id:
+            clear_player_room(requester_id)
+        
+        await query.answer("Вы отказались от реванша")
+
+
+async def _start_rematch_game(update: Update, context: ContextTypes.DEFAULT_TYPE, old_room: Room) -> None:
+    """Start a new game as rematch."""
+    from state.rooms import create_room
+    
+    # Create new room with same settings
+    new_room = create_room(
+        mode=old_room.mode,
+        board_size=old_room.board_size,
+        player_a_id=old_room.player_a_id,
+        player_b_id=old_room.player_b_id,
+        player_a_emoji=old_room.player_a_emoji,
+        player_b_emoji=old_room.player_b_emoji,
+    )
+    new_room.start_game()
+    
+    # Update player room associations
+    set_player_room(old_room.player_a_id, new_room.id)
+    if old_room.player_b_id:
+        set_player_room(old_room.player_b_id, new_room.id)
+    
+    # Send game state to both players
+    await send_game_state_new_message(update, context, new_room, old_room.player_a_id)
+    if old_room.player_b_id:
+        await send_game_state_new_message(update, context, new_room, old_room.player_b_id)
 
 
 async def handle_afk_choice(
@@ -875,6 +1029,21 @@ async def handle_leave_game(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if room:
             room.state = RoomState.ABANDONED
             logger.info(f"Player {user.id} left game {room.id}")
+            
+            # Notify opponent if PvP
+            if not room.is_pve():
+                opponent_id = room.player_b_id if user.id == room.player_a_id else room.player_a_id
+                if opponent_id:
+                    try:
+                        # Clear opponent's room state
+                        set_player_room(opponent_id, None)
+                        # Notify opponent
+                        await context.bot.send_message(
+                            chat_id=opponent_id,
+                            text="🚫 Соперник покинул игру. Игра завершена.",
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to notify opponent {opponent_id}: {e}")
     
     # Clear player's room
     set_player_room(user.id, None)
@@ -882,11 +1051,13 @@ async def handle_leave_game(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     from telegram_pkg.keyboards import main_menu_keyboard
     from telegram_pkg.messages import MAIN_MENU_TITLE
     
+    # Try to delete the game message
     try:
         await query.message.delete()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Could not delete game message: {e}")
     
+    # Always send menu
     await context.bot.send_message(
         chat_id=user.id,
         text="👋 Вы покинули игру.\n\n" + MAIN_MENU_TITLE,
