@@ -46,6 +46,7 @@ class CallbackAction(Enum):
     
     # Pagination
     PAGE = "pg"
+    LEAVE = "leave"
 
 
 @dataclass
@@ -54,6 +55,8 @@ class ParsedCallback:
     action: CallbackAction
     params: list[str]
     raw: str  # Original callback string
+    room_id: Optional[str] = None
+    version: Optional[int] = None
     
     @property
     def param1(self) -> Optional[str]:
@@ -120,23 +123,29 @@ class ParsedCallback:
 
 def parse_callback(data: str) -> ParsedCallback:
     """Parse callback data string into structured format."""
+    if not isinstance(data, str) or len(data.encode()) > 64:
+        return ParsedCallback(CallbackAction.NOOP, [], "")
     parts = data.split(":")
-    
     try:
         action = CallbackAction(parts[0])
     except ValueError:
-        # Fallback for 'leave' command which doesn't fit standard format well
-        if parts[0] == 'leave':
-             # Treat 'leave' as a special case or map to existing action?
-             # For now, let's just let it be parsed if possible or return NOOP
-             # Ideally 'leave' should have its own action type
-             action = CallbackAction.NOOP
-        else:
-            action = CallbackAction.NOOP
-    
-    params = parts[1:] if len(parts) > 1 else []
-    
-    return ParsedCallback(action=action, params=params, raw=data)
+        action = CallbackAction.NOOP
+    params = parts[1:]
+    room_id = None
+    version = None
+    sizes = {CallbackAction.EDGE: 3, CallbackAction.NUM: 1, CallbackAction.PAGE: 1,
+             CallbackAction.AFK: 1, CallbackAction.LEAVE: 0}
+    expected = sizes.get(action)
+    if action == CallbackAction.REMATCH:
+        expected = 1 if params and params[0] in {"yes", "no"} else 0
+    if expected is not None and len(params) == expected + 2:
+        room_id = params[-2]
+        try:
+            version = int(params[-1])
+        except ValueError:
+            pass
+        params = params[:-2]
+    return ParsedCallback(action, params, data, room_id, version)
 
 
 def matrix_to_edge_id(edge_type: str, matrix_row: int, matrix_col: int) -> str:
@@ -149,6 +158,13 @@ def matrix_to_edge_id(edge_type: str, matrix_row: int, matrix_col: int) -> str:
     For vertical edge at matrix (r, c):
       board edge is v_{r//2}_{c//2}
     """
+    if not isinstance(matrix_row, int) or not isinstance(matrix_col, int):
+        raise ValueError("Invalid matrix coordinates")
+    if matrix_row < 0 or matrix_col < 0 or edge_type not in {"h", "v"}:
+        raise ValueError("Invalid matrix coordinates")
+    if (edge_type == "h" and (matrix_row % 2 != 0 or matrix_col % 2 != 1)) or \
+       (edge_type == "v" and (matrix_row % 2 != 1 or matrix_col % 2 != 0)):
+        raise ValueError("Coordinates are not an edge")
     if edge_type == "h":
         edge_row = matrix_row // 2
         edge_col = matrix_col // 2

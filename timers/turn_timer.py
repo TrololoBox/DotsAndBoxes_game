@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Optional
 import logging
 
-from state.rooms import Room, GameMode
+from state.rooms import Room, GameMode, RoomState, get_room
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def get_timer_status(room: Room) -> TimerStatus:
     )
 
 
-def handle_timeout(room: Room) -> bool:
+def handle_timeout(room: Room, expected_version: int) -> bool:
     """
     Handle a turn timeout.
     
@@ -87,6 +87,14 @@ def handle_timeout(room: Room) -> bool:
     Returns:
         True if should show AFK choice, False otherwise
     """
+    # No scheduler is currently wired. Validate captured turn identity and deadline
+    # before recording an event; never charge an old/duplicate timer to a new turn.
+    if (get_room(room.id) is not room or room.state != RoomState.ACTIVE
+            or room.state_version != expected_version
+            or room.last_timeout_version == expected_version
+            or not get_timer_status(room).is_expired):
+        return False
+    room.last_timeout_version = expected_version
     # Increment timeout counter for current player
     if room.current_player_index == 0:
         room.consecutive_timeouts_a += 1

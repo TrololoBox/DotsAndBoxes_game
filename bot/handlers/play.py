@@ -13,8 +13,8 @@ from telegram_pkg.keyboards import (
 from telegram_pkg.messages import (
     PLAY_MODE_TITLE, PLAY_SIZE_TITLE, PLAY_DIFFICULTY_TITLE, QUEUE_WAITING
 )
-from state.players import get_or_create_player, set_player_room
-from state.rooms import create_room, GameMode
+from state.players import get_or_create_player, set_player_room, get_player
+from state.rooms import create_room, GameMode, get_room, RoomState
 from state.queues import join_queue, leave_queue, find_match, get_queue_position
 
 
@@ -29,7 +29,8 @@ PENDING_SIZE_KEY = "pending_size"
 async def play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle play-related callbacks."""
     query = update.callback_query
-    print(f"DEBUG: play_callback called with {query.data}")
+    from state.cleanup import cleanup_stale_rooms
+    cleanup_stale_rooms()
     await query.answer()
     
     user = update.effective_user
@@ -102,6 +103,12 @@ async def handle_size_selection(
             show_alert=True
         )
     
+    get_or_create_player(user.id, user.username, user.first_name)
+    if has_open_room(user.id):
+        await query.answer("Сначала завершите текущую игру через /start")
+        return
+    if mode != "pvp_world":
+        leave_queue(user.id)
     if mode == "pve":
         # Show difficulty selection for PvE
         await query.edit_message_text(
@@ -150,6 +157,10 @@ async def handle_difficulty_selection(
     # Get or create player profile
     player = get_or_create_player(user.id, user.username, user.first_name)
     
+    if has_open_room(user.id):
+        await query.answer("Сначала завершите текущую игру через /start")
+        return
+    leave_queue(user.id)
     # Create PvE room
     room = create_room(
         mode=GameMode.PVE,
@@ -204,8 +215,11 @@ async def start_pvp_game(
     """Start a PvP game between two matched players."""
     from state.players import get_player
     
-    player_a = get_player(player_a_id)
-    player_b = get_player(player_b_id)
+    if has_open_room(player_a_id) or has_open_room(player_b_id) or player_a_id == player_b_id:
+        await update.callback_query.answer("Игрок уже занят")
+        return
+    player_a = get_or_create_player(player_a_id, "", "Игрок")
+    player_b = get_or_create_player(player_b_id, "", "Игрок")
     
     room = create_room(
         mode=GameMode.PVP_WORLD,
@@ -221,10 +235,9 @@ async def start_pvp_game(
     
     room.start_game()
     
-    # Notify both players
-    # Note: In production, we'd need to send messages to both users
-    from bot.handlers.game import send_game_state
-    await send_game_state(update, context, room)
+    from bot.handlers.game import send_game_state_new_message
+    await send_game_state_new_message(update, context, room, player_a_id)
+    await send_game_state_new_message(update, context, room, player_b_id)
 
 
 async def create_friend_invite(
@@ -237,6 +250,10 @@ async def create_friend_invite(
     user = update.effective_user
     
     player = get_or_create_player(user.id, user.username, user.first_name)
+
+    if has_open_room(user.id):
+        await query.answer("Сначала завершите текущую игру через /start")
+        return
     
     room = create_room(
         mode=GameMode.PVP_FRIEND,
@@ -252,7 +269,7 @@ async def create_friend_invite(
     invite_link = f"https://t.me/{bot_username}?start=invite_{room.invite_code}"
     
     from html import escape
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram_pkg.keyboards import bind_game_keyboard
     
     invite_message = (
         "👥 <b>Приглашение создано!</b>\n\n"
@@ -266,11 +283,17 @@ async def create_friend_invite(
     share_text = f"🎮 Давай сыграем в Точки и Квадраты!\n{invite_link}"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📤 Пригласить друга", switch_inline_query=share_text)],
-        [InlineKeyboardButton("❌ Отменить", callback_data="menu:main")],
+        [InlineKeyboardButton("❌ Отменить", callback_data="leave")],
     ])
     
     await query.edit_message_text(
         invite_message,
         parse_mode="HTML",
-        reply_markup=keyboard,
+        reply_markup=bind_game_keyboard(keyboard, room),
     )
+
+
+def has_open_room(user_id: int) -> bool:
+    player = get_player(user_id)
+    room = get_room(player.current_room_id) if player and player.current_room_id else None
+    return room is not None and room.state in {RoomState.PENDING, RoomState.ACTIVE}

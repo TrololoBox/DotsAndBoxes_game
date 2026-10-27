@@ -402,9 +402,9 @@ def post_game_keyboard(can_rematch: bool = True) -> InlineKeyboardMarkup:
 
 def afk_choice_keyboard() -> InlineKeyboardMarkup:
     """AFK choice keyboard."""
+    # No caller currently schedules AFK; do not advertise unimplemented rules.
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(BTN_CONTINUE_BOT, callback_data=cb_afk("bot"))],
-        [InlineKeyboardButton(BTN_SURRENDER, callback_data=cb_afk("surrender"))],
+        [InlineKeyboardButton("AFK пока недоступен", callback_data="noop:afk")],
     ])
 
 
@@ -431,3 +431,36 @@ def back_keyboard(destination: str = "main") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(BTN_BACK, callback_data=cb_menu(destination))],
     ])
+
+
+def bind_game_keyboard(keyboard: InlineKeyboardMarkup, room) -> InlineKeyboardMarkup:
+    """Bind every state-changing button to this match and board revision."""
+    rows = []
+    for row in keyboard.inline_keyboard:
+        buttons = []
+        for button in row:
+            data = button.to_dict()
+            callback = data.get("callback_data")
+            if callback and (callback.split(":")[0] in {"e", "num", "pg", "afk", "rm", "leave"}):
+                data["callback_data"] = f"{callback}:{room.id}:{room.state_version}"
+                if len(data["callback_data"].encode()) > 64:
+                    raise ValueError("Callback exceeds Telegram limit")
+            buttons.append(InlineKeyboardButton(**data))
+        rows.append(buttons)
+    return InlineKeyboardMarkup(rows)
+
+
+def lines_page_count(board: Board) -> int:
+    """Use the actual renderer's greedy row packing for server-side bounds."""
+    rows = []
+    for r in range(board.height + 1):
+        rows.extend(min(8, board.width - i) for i in range(0, board.width, 8))
+        if r < board.height:
+            rows.extend(min(8, board.width + 1 - i) for i in range(0, board.width + 1, 8))
+    pages, used = 1, 0
+    for length in rows:
+        if used + length > 60:
+            pages += 1
+            used = 0
+        used += length
+    return pages

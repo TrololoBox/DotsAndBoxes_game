@@ -9,6 +9,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict
 import uuid
+import asyncio
+
+from game.turn import apply_turn, TurnResult
 
 from game.board import Board, create_board
 
@@ -53,10 +56,11 @@ class Room:
     board: Optional[Board] = None
     current_player_index: int = 0  # 0 = player_a, 1 = player_b
     state: RoomState = RoomState.PENDING
+    state_version: int = 0
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    last_timeout_version: Optional[int] = None
     
     # Player customization (cached at game start)
-    player_a_emoji: str = "😀"
-    player_b_emoji: str = "😎"
     player_a_emoji: str = "😀"
     player_b_emoji: str = "😎"
     theme: str = "classic"
@@ -107,22 +111,53 @@ class Room:
         """Switch to the other player's turn."""
         self.current_player_index = 1 - self.current_player_index
         self.turn_started_at = datetime.now()
+        self.state_version += 1
     
     def keep_current_player(self) -> None:
         """Keep current player for extra turn."""
         self.turn_started_at = datetime.now()
+        self.state_version += 1
     
     def start_game(self) -> None:
         """Initialize and start the game."""
+        if self.state != RoomState.PENDING:
+            raise ValueError("Only a pending room can start")
         self.board = create_board(self.board_size, width=self.board_width, height=self.board_height)
         self.state = RoomState.ACTIVE
         self.turn_started_at = datetime.now()
+        self.state_version += 1
     
     def complete_game(self) -> None:
         """Mark game as completed."""
+        if self.state != RoomState.ACTIVE:
+            return
         self.state = RoomState.COMPLETED
         self.completed_at = datetime.now()
+        self.state_version += 1
     
+    def apply_move(self, player_id: str, edge_id: str) -> Optional[TurnResult]:
+        """Commit one full move synchronously, before Telegram I/O can yield."""
+        if self.state != RoomState.ACTIVE or self.board is None:
+            return None
+        current = "bot" if self.is_pve() and self.current_player_index == 1 else str(self.current_player_id)
+        other = "bot" if self.is_pve() and self.current_player_index == 0 else str(self.other_player_id)
+        if player_id != current:
+            return None
+        result = apply_turn(self.board, player_id, edge_id, current, other)
+        if not result.success:
+            return result
+        if self.current_player_index == 0:
+            self.consecutive_timeouts_a = 0
+        else:
+            self.consecutive_timeouts_b = 0
+        if result.game_over:
+            self.complete_game()
+        elif result.extra_turn:
+            self.keep_current_player()
+        else:
+            self.switch_player()
+        return result
+
     def is_pve(self) -> bool:
         """Check if this is a PvE game."""
         return self.mode == GameMode.PVE
@@ -240,6 +275,13 @@ def delete_room(room_id: str) -> None:
     if room:
         if room.invite_code and room.invite_code in _invite_codes:
             del _invite_codes[room.invite_code]
+        from state.players import get_player, set_player_room
+        for uid in (room.player_a_id, room.player_b_id):
+            player = get_player(uid) if uid is not None else None
+            if player and player.current_room_id == room_id:
+                set_player_room(uid, None)
+        room.state = RoomState.ABANDONED
+        room.state_version += 1
         del _rooms[room_id]
 
 
