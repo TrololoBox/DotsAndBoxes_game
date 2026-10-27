@@ -82,7 +82,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(main_menu_callback, pattern=r"^menu:"))
     
     # Play mode selection (mode, size, diff, cancel queue)
-    application.add_handler(CallbackQueryHandler(play_callback, pattern=r"^(mode|size|diff|cq):"))
+    application.add_handler(CallbackQueryHandler(play_callback, pattern=r"^(mode:|size:|diff:|cq$)"))
     
     # In-game actions (edges, noop, rematch, afk, leave)
     # e:h:r:c for horizontal edges, e:v:r:c for vertical edges

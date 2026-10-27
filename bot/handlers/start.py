@@ -29,6 +29,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     logger.info(f"User {user.id} ({user.username}) started the bot")
     
+    from state.cleanup import cleanup_stale_rooms
+    from state.players import get_or_create_player
+    cleanup_stale_rooms()
+    player = get_or_create_player(user.id, user.username, user.first_name)
     # Check for invite code in deep link
     args = context.args
     if args:
@@ -39,6 +43,33 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await handle_invite_join(update, context, invite_code)
             return
     
+    from state.rooms import get_room, RoomState
+    room = get_room(player.current_room_id) if player.current_room_id else None
+    if room and room.state == RoomState.COMPLETED:
+        from bot.handlers.game import send_game_over
+        async with room.lock:
+            if get_room(room.id) is room and player.current_room_id == room.id:
+                await send_game_over(update, context, room, only_current_user=True)
+        return
+    if room and room.state == RoomState.ACTIVE:
+        from bot.handlers.game import send_game_state_new_message, make_bot_move
+        async with room.lock:
+            if get_room(room.id) is not room or room.state != RoomState.ACTIVE:
+                return
+            if room.is_pve() and room.current_player_index == 1:
+                await make_bot_move(update, context, room)
+            else:
+                await send_game_state_new_message(update, context, room, user.id)
+        return
+    if room and room.state == RoomState.PENDING:
+        from telegram_pkg.keyboards import bind_game_keyboard
+        await update.message.reply_text(
+            "⏳ Приглашение ожидает друга. Можно отменить ожидание.",
+            reply_markup=bind_game_keyboard(InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Отменить", callback_data="leave")],
+            ]), room),
+        )
+        return
     # Import persistent keyboard
     from telegram_pkg.keyboards import persistent_menu_keyboard
     
@@ -102,6 +133,19 @@ async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return
     
+    from state.cleanup import cleanup_stale_rooms
+    from bot.handlers.play import has_open_room
+    from state.players import get_player
+    cleanup_stale_rooms()
+    owner = get_player(room.player_a_id)
+    if get_room_by_invite(invite_code) is not room or not owner or owner.current_room_id != room.id:
+        await update.message.reply_text("Приглашение истекло")
+        return
+    if has_open_room(user.id):
+        await update.message.reply_text("Сначала завершите текущую игру через /start")
+        return
+    from state.queues import leave_queue
+    leave_queue(user.id)
     # Add player B to the room
     player_b = get_or_create_player(user.id, user.username, user.first_name)
     room.player_b_id = user.id

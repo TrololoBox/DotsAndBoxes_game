@@ -49,11 +49,6 @@ def cleanup_stale_rooms() -> int:
             logger.info(f"Cleaning up abandoned room {room.id}")
         
         if should_delete:
-            # Release players from room
-            set_player_room(room.player_a_id, None)
-            if room.player_b_id:
-                set_player_room(room.player_b_id, None)
-            
             delete_room(room.id)
             cleaned += 1
     
