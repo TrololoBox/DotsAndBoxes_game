@@ -9,21 +9,14 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from bot.config import BOT_TOKEN, logger
-from bot.handlers.start import start_command, main_menu_callback
+from bot.handlers.start import start_command, main_menu_callback, show_main_menu
 from bot.handlers.play import play_callback
 from bot.handlers.game import game_callback
 
 
 async def menu_text_handler(update: Update, context) -> None:
     """Handle 'Меню' text message to show main menu."""
-    from telegram_pkg.keyboards import main_menu_keyboard
-    from telegram_pkg.messages import MAIN_MENU_TITLE
-    
-    await update.message.reply_text(
-        MAIN_MENU_TITLE,
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(),
-    )
+    await show_main_menu(update, context)
 
 
 async def support_handler(update: Update, context) -> None:
@@ -71,12 +64,13 @@ def main() -> None:
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("menu", start_command))
+    application.add_handler(CommandHandler("menu", menu_text_handler))
     
     # Handle reply keyboard buttons
     application.add_handler(MessageHandler(filters.Regex(r"^📋 Меню$"), menu_text_handler))
-    application.add_handler(MessageHandler(filters.Regex(r"^💝 Поддержать$"), support_handler))
-    application.add_handler(MessageHandler(filters.Regex(r"^🗑 Очистить чат$"), clear_chat_handler))
+    application.add_handler(MessageHandler(filters.Regex(r"^▶️ Продолжить$"), start_command))
+    # Retire old persistent keyboards into a screen with working actions.
+    application.add_handler(MessageHandler(filters.Regex(r"^(💝 Поддержать|🗑 Очистить чат)$"), menu_text_handler))
     
     # Menu navigation
     application.add_handler(CallbackQueryHandler(main_menu_callback, pattern=r"^menu:"))

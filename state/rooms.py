@@ -67,6 +67,14 @@ class Room:
     
     # UI State
     current_page: int = 0  # For paginated keyboards (lines mode)
+    pages_by_player: Dict[int, int] = field(default_factory=dict)
+
+    # Presentation history is committed with the move, never during delivery.
+    last_move_edge_id: Optional[str] = None
+    last_move_player_id: Optional[str] = None
+    recent_edge_ids: list[str] = field(default_factory=list)
+    recent_captures: int = 0
+    last_turns: Dict[str, list[str]] = field(default_factory=dict)
     
     # Turn tracking
     consecutive_timeouts_a: int = 0
@@ -146,6 +154,14 @@ class Room:
         result = apply_turn(self.board, player_id, edge_id, current, other)
         if not result.success:
             return result
+        if self.last_move_player_id != player_id:
+            self.recent_edge_ids = []
+            self.recent_captures = 0
+        self.recent_edge_ids.append(edge_id)
+        self.recent_captures += len(result.captures)
+        self.last_turns[player_id] = list(self.recent_edge_ids)
+        self.last_move_edge_id = edge_id
+        self.last_move_player_id = player_id
         if self.current_player_index == 0:
             self.consecutive_timeouts_a = 0
         else:
@@ -215,21 +231,8 @@ def create_room(
         width = board_size
         height = board_size
         
-    # Determine input mode
-    # Telegram inline keyboard limit is 8 columns.
-    # Grid columns = 2 * width + 1.
-    grid_cols = 2 * width + 1
-    
-    # Specific override for 5x5 and 6x6 (lines mode)
-    if width in [5, 6] and height in [5, 6]:
-        input_mode = "lines"
-    # 4x4 allows classic mode (try to fit)
-    elif width == 4 and height == 4:
-        input_mode = "classic"
-    elif grid_cols > 9: # Allow 9 columns for 4x4 classic (may require testing)
-        input_mode = "numbered"
-    else:
-        input_mode = "classic"
+    # All sizes use the same stable number on the picture and on the keypad.
+    input_mode = "numbered"
     
     room = Room(
         id=room_id,

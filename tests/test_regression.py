@@ -240,7 +240,10 @@ def test_pagination_covers_all_edges(size):
             for button in row:
                 cb = parse_callback(button.callback_data)
                 assert len(button.callback_data.encode()) <= 64
-                if cb.is_edge:
+                if cb.is_num:
+                    from game.edge_numbering import get_edge_by_number
+                    seen.add(get_edge_by_number(r.board, cb.edge_number))
+                elif cb.is_edge:
                     seen.add(matrix_to_edge_id(cb.edge_type, cb.edge_matrix_row, cb.edge_matrix_col))
     assert seen == set(r.board.edges)
 
@@ -391,9 +394,10 @@ async def test_start_can_cancel_pending_invite(transport):
     get_or_create_player(1, '', 'Test')
     await play.create_friend_invite(update(1), ctx, 3)
     u = update(1)
+    u.callback_query = None  # A real /start Update contains a message, not a callback.
     await start.start_command(u, ctx)
     keyboard = u.message.reply_text.call_args.kwargs['reply_markup']
-    assert any(b.callback_data.startswith('leave:') for row in keyboard.inline_keyboard for b in row)
+    assert any((b.callback_data or '').startswith('leave:') for row in keyboard.inline_keyboard for b in row)
 
 
 @pytest.mark.asyncio
