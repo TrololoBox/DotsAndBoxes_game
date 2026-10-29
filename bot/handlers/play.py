@@ -16,6 +16,7 @@ from telegram_pkg.messages import (
 from state.players import get_or_create_player, set_player_room, get_player
 from state.rooms import create_room, GameMode, get_room, RoomState
 from state.queues import join_queue, leave_queue, find_match, get_queue_position
+from telegram_pkg.screens import show_screen
 
 
 logger = logging.getLogger(__name__)
@@ -55,11 +56,7 @@ async def show_mode_selection(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Show game mode selection screen."""
     query = update.callback_query
     
-    await query.edit_message_text(
-        PLAY_MODE_TITLE,
-        parse_mode="Markdown",
-        reply_markup=play_mode_keyboard(),
-    )
+    await show_screen(update, context, PLAY_MODE_TITLE, play_mode_keyboard(), "Markdown")
 
 
 async def handle_mode_selection(
@@ -74,11 +71,7 @@ async def handle_mode_selection(
     context.user_data[PENDING_MODE_KEY] = mode
     
     # Show size selection
-    await query.edit_message_text(
-        PLAY_SIZE_TITLE,
-        parse_mode="Markdown",
-        reply_markup=board_size_keyboard(),
-    )
+    await show_screen(update, context, PLAY_SIZE_TITLE, board_size_keyboard(), "Markdown")
 
 
 async def handle_size_selection(
@@ -93,29 +86,16 @@ async def handle_size_selection(
     mode = context.user_data.get(PENDING_MODE_KEY, "pve")
     context.user_data[PENDING_SIZE_KEY] = size
     
-    # Check for numbered mode
-    width = int((size - 10000) / 100) if size > 100 else size
-    is_numbered = (2 * width + 1) > 8
-    
-    if is_numbered:
-        await query.answer(
-            "ℹ️ Большое поле: Активирован режим ввода по номерам!",
-            show_alert=True
-        )
-    
     get_or_create_player(user.id, user.username, user.first_name)
     if has_open_room(user.id):
-        await query.answer("Сначала завершите текущую игру через /start")
+        from bot.handlers.start import show_main_menu
+        await show_main_menu(update, context)
         return
     if mode != "pvp_world":
         leave_queue(user.id)
     if mode == "pve":
         # Show difficulty selection for PvE
-        await query.edit_message_text(
-            PLAY_DIFFICULTY_TITLE,
-            parse_mode="Markdown",
-            reply_markup=difficulty_keyboard(),
-        )
+        await show_screen(update, context, PLAY_DIFFICULTY_TITLE, difficulty_keyboard(), "Markdown")
     
     elif mode == "pvp_world":
         # Join matchmaking queue
@@ -130,11 +110,10 @@ async def handle_size_selection(
                 await start_pvp_game(update, context, player_a, player_b, size)
             else:
                 # Wait in queue
-                await query.edit_message_text(
-                    QUEUE_WAITING.format(size=size, position=position),
-                    parse_mode="Markdown",
-                    reply_markup=queue_keyboard(),
-                )
+                width = (size - 10000) // 100 if size > 100 else size
+                height = size % 100 if size > 100 else size
+                text = QUEUE_WAITING.format(size=width, position=position).replace(f"{width}×{width}", f"{width}×{height}")
+                await show_screen(update, context, text, queue_keyboard(), "Markdown")
         else:
             await query.answer("Вы уже в очереди!", show_alert=True)
     
@@ -158,7 +137,8 @@ async def handle_difficulty_selection(
     player = get_or_create_player(user.id, user.username, user.first_name)
     
     if has_open_room(user.id):
-        await query.answer("Сначала завершите текущую игру через /start")
+        from bot.handlers.start import show_main_menu
+        await show_main_menu(update, context)
         return
     leave_queue(user.id)
     # Create PvE room
@@ -186,7 +166,17 @@ async def handle_difficulty_selection(
         logger.info("Initial state sent successfully.")
     except Exception as e:
         logger.error(f"Failed to send game state: {e}", exc_info=True)
-        await query.answer("Ошибка запуска игры!", show_alert=True)
+        if query:
+            await query.answer("Не удалось показать поле. Нажми /start, чтобы продолжить.", show_alert=True)
+        else:
+            await update.message.reply_text("Не удалось показать поле. Нажми /start, чтобы продолжить.")
+
+
+async def start_quick_game(update, context) -> None:
+    """One tap to the same real PvE pipeline; never replace an open match."""
+    context.user_data[PENDING_MODE_KEY] = "pve"
+    context.user_data[PENDING_SIZE_KEY] = 3
+    await handle_difficulty_selection(update, context, "easy")
 
 
 async def handle_cancel_queue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -195,11 +185,6 @@ async def handle_cancel_queue(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     
     if leave_queue(user.id):
-        await query.edit_message_text(
-            "❌ Поиск отменён.\n\nВозвращаемся в меню...",
-        )
-        
-        # Return to mode selection
         await show_mode_selection(update, context)
     else:
         await query.answer("Вы не в очереди.", show_alert=True)
@@ -252,7 +237,8 @@ async def create_friend_invite(
     player = get_or_create_player(user.id, user.username, user.first_name)
 
     if has_open_room(user.id):
-        await query.answer("Сначала завершите текущую игру через /start")
+        from bot.handlers.start import show_main_menu
+        await show_main_menu(update, context)
         return
     
     room = create_room(
@@ -263,7 +249,11 @@ async def create_friend_invite(
     )
     
     set_player_room(user.id, room.id)
-    
+    await show_friend_invite(update, context, room)
+
+
+async def show_friend_invite(update, context, room):
+    """Recover the same invitation, including its link, from any menu screen."""
     # Generate invite link
     bot_username = (await context.bot.get_me()).username
     invite_link = f"https://t.me/{bot_username}?start=invite_{room.invite_code}"
@@ -275,22 +265,20 @@ async def create_friend_invite(
         "👥 <b>Приглашение создано!</b>\n\n"
         f"Нажми кнопку ниже, чтобы пригласить друга, или отправь ссылку:\n"
         f"<code>{escape(invite_link)}</code>\n\n"
-        f"Код: <code>{escape(room.invite_code)}</code>\n\n"
         "⏳ Ссылка действительна 10 минут."
     )
     
-    # Share button - opens chat selection to share the link
-    share_text = f"🎮 Давай сыграем в Точки и Квадраты!\n{invite_link}"
+    # Telegram's share URL works without an inline-query handler or /setinline.
+    from urllib.parse import urlencode
+    share_url = "https://t.me/share/url?" + urlencode({
+        "url": invite_link, "text": "🎮 Давай сыграем в Точки и Квадраты!",
+    })
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Пригласить друга", switch_inline_query=share_text)],
+        [InlineKeyboardButton("📤 Отправить другу", url=share_url)],
         [InlineKeyboardButton("❌ Отменить", callback_data="leave")],
     ])
     
-    await query.edit_message_text(
-        invite_message,
-        parse_mode="HTML",
-        reply_markup=bind_game_keyboard(keyboard, room),
-    )
+    await show_screen(update, context, invite_message, bind_game_keyboard(keyboard, room))
 
 
 def has_open_room(user_id: int) -> bool:

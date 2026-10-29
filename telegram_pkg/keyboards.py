@@ -54,15 +54,19 @@ SYM_EDGE_PLAYER_B = "🟥"
 SYM_EMPTY_SQUARE = "🟧"
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
+def main_menu_keyboard(room=None) -> InlineKeyboardMarkup:
     """Main menu keyboard."""
+    if room is not None:
+        rows = [
+            [InlineKeyboardButton("▶️ Продолжить игру", callback_data="menu:resume")],
+            [InlineKeyboardButton("🚪 Завершить игру", callback_data="leave:ask")],
+            [InlineKeyboardButton("📖 Как играть", callback_data="menu:rules")],
+        ]
+        return bind_game_keyboard(InlineKeyboardMarkup(rows), room)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(BTN_PLAY, callback_data=cb_menu("play"))],
-        [
-            InlineKeyboardButton(BTN_PROFILE, callback_data=cb_menu("profile")),
-            InlineKeyboardButton(BTN_SETTINGS, callback_data=cb_menu("settings")),
-        ],
-        [InlineKeyboardButton(BTN_SUPPORT, callback_data=cb_menu("support"))],
+        [InlineKeyboardButton("▶️ Быстрая игра", callback_data="menu:quick")],
+        [InlineKeyboardButton("🎮 Другие режимы", callback_data=cb_menu("play"))],
+        [InlineKeyboardButton("📖 Как играть", callback_data="menu:rules")],
     ])
 
 
@@ -70,8 +74,7 @@ def persistent_menu_keyboard() -> ReplyKeyboardMarkup:
     """Persistent bottom menu keyboard (can be collapsed by user)."""
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("📋 Меню"), KeyboardButton("💝 Поддержать")],
-            [KeyboardButton("🗑 Очистить чат")],
+            [KeyboardButton("📋 Меню"), KeyboardButton("▶️ Продолжить")],
         ],
         resize_keyboard=True,
     )
@@ -81,23 +84,29 @@ def play_mode_keyboard() -> InlineKeyboardMarkup:
     """Game mode selection keyboard."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(BTN_PVE, callback_data=cb_mode("pve"))],
-        [InlineKeyboardButton(BTN_PVP_WORLD, callback_data=cb_mode("pvp_world"))],
         [InlineKeyboardButton(BTN_PVP_FRIEND, callback_data=cb_mode("pvp_friend"))],
+        [InlineKeyboardButton(BTN_PVP_WORLD, callback_data=cb_mode("pvp_world"))],
         [InlineKeyboardButton(BTN_BACK, callback_data=cb_menu("main"))],
     ])
 
 
-def board_size_keyboard() -> InlineKeyboardMarkup:
+def board_size_keyboard(expanded: bool = False) -> InlineKeyboardMarkup:
     """Board size selection keyboard."""
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("3×3 (9 квадратов)", callback_data=cb_size(3))],
         [InlineKeyboardButton("3×4 (12 квадратов)", callback_data=cb_size(10304))],
-        [InlineKeyboardButton("3×5 (15 квадратов)", callback_data=cb_size(10305))],
-        [InlineKeyboardButton("4×4 (16 квадратов)", callback_data=cb_size(10404))],
-        [InlineKeyboardButton("5×5 (🔢 Цифры)", callback_data=cb_size(10505))],
-        [InlineKeyboardButton("6×6 (🔢 Цифры)", callback_data=cb_size(10606))],
-        [InlineKeyboardButton(BTN_BACK, callback_data=cb_menu("play"))],
-    ])
+    ]
+    if expanded:
+        rows.extend([
+            [InlineKeyboardButton("3×5 (15 квадратов)", callback_data=cb_size(10305))],
+            [InlineKeyboardButton("4×4 (16 квадратов)", callback_data=cb_size(10404))],
+            [InlineKeyboardButton("5×5 — большое поле", callback_data=cb_size(10505))],
+            [InlineKeyboardButton("6×6 — большое поле", callback_data=cb_size(10606))],
+        ])
+    else:
+        rows.append([InlineKeyboardButton("📐 Другие размеры", callback_data="menu:sizes_more")])
+    rows.append([InlineKeyboardButton(BTN_BACK, callback_data=cb_menu("play"))])
+    return InlineKeyboardMarkup(rows)
 
 
 def difficulty_keyboard() -> InlineKeyboardMarkup:
@@ -106,13 +115,14 @@ def difficulty_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(BTN_EASY, callback_data=cb_diff("easy"))],
         [InlineKeyboardButton(BTN_MEDIUM, callback_data=cb_diff("medium"))],
         [InlineKeyboardButton(BTN_HARD, callback_data=cb_diff("hard"))],
-        [InlineKeyboardButton(BTN_BACK, callback_data=cb_menu("play"))],
+        [InlineKeyboardButton(BTN_BACK, callback_data=cb_menu("sizes"))],
     ])
 
 
 def queue_keyboard() -> InlineKeyboardMarkup:
     """Queue waiting keyboard."""
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤖 Пока сыграть с ботом", callback_data="menu:quick")],
         [InlineKeyboardButton(BTN_CANCEL_QUEUE, callback_data=cb_cancel_queue())],
     ])
 
@@ -228,156 +238,47 @@ def game_board_keyboard(
     return InlineKeyboardMarkup(keyboard)
 
 
-def numbered_edge_keyboard(board: Board) -> InlineKeyboardMarkup:
-    """
-    Generate numeric keypad for edge selection.
-    
-    Shows buttons 1 to N, where N is total edges.
-    Occupied edges are marked and non-clickable.
-    """
-    from game.edge_numbering import get_edge_numbers
-    
-    edge_numbers = get_edge_numbers(board)
-    max_edges = len(edge_numbers)
-    
-    buttons = []
-    row = []
-    
-    # Sort edges by number to display 1..N
-    sorted_edges = sorted(edge_numbers.items(), key=lambda x: x[1])
-    
-    for edge_id, number in sorted_edges:
-        edge = board.get_edge(edge_id)
-        is_occupied = edge and edge.is_occupied
-        
-        text = str(number)
-        if is_occupied:
-            text = "✓"
-            callback = cb_noop("occupied")
-        else:
-            callback = cb_num(number)
-        
-        row.append(InlineKeyboardButton(text, callback_data=callback))
-        
-        if len(row) == 8:  # 8 columns max
-            buttons.append(row)
-            row = []
-    
-    if row:
-        buttons.append(row)
-    
-    # Add leave game button at the bottom
-    buttons.append([
-        InlineKeyboardButton("🚪 Покинуть игру", callback_data="leave"),
-    ])
-    
-    return InlineKeyboardMarkup(buttons)
+NUMBER_COLUMNS = 6
+NUMBERS_PER_PAGE = 42
 
+
+def numbered_edge_keyboard(board: Board, page: int = 0) -> InlineKeyboardMarkup:
+    """Fixed number ranges; remove taken moves without renumbering the rest."""
+    from game.edge_numbering import get_edge_numbers
+    count = lines_page_count(board)
+    page = max(0, min(page, count - 1))
+    lower, upper = page * NUMBERS_PER_PAGE + 1, min((page + 1) * NUMBERS_PER_PAGE, board.total_edges)
+    free = [InlineKeyboardButton(str(number), callback_data=cb_num(number))
+            for edge_id, number in get_edge_numbers(board).items()
+            if lower <= number <= upper and not board.get_edge(edge_id).is_occupied]
+    rows = [free[i:i + NUMBER_COLUMNS] for i in range(0, len(free), NUMBER_COLUMNS)]
+    if not rows:
+        rows = [[InlineKeyboardButton("Здесь все линии заняты", callback_data="noop:page")]]
+    if count > 1:
+        nav = []
+        if page:
+            nav.append(InlineKeyboardButton("◀️", callback_data=cb_page(page - 1)))
+        nav.append(InlineKeyboardButton(f"№{lower}–{upper} · {page + 1}/{count}", callback_data="noop:page"))
+        if page + 1 < count:
+            nav.append(InlineKeyboardButton("▶️", callback_data=cb_page(page + 1)))
+        rows.append(nav)
+    rows.append([
+        InlineKeyboardButton("📋 Меню", callback_data="menu:main"),
+        InlineKeyboardButton("🚪 Выйти", callback_data="leave:ask"),
+    ])
+    return InlineKeyboardMarkup(rows)
 
 
 def lines_keyboard(board: Board, player_a_id: str, player_b_id: Optional[str] = None, page: int = 0) -> InlineKeyboardMarkup:
-    """
-    Generate keyboard with lines only (for large boards).
-    Shows buttons as horizontal strips. Supports pagination.
-    """
-    buttons = []
-    all_rows = []
-    
-    # 1. Generate all rows of buttons
-    # Iterate through board rows
-    for r in range(board.height + 1):
-        # Horizontal edges (width buttons)
-        h_row = []
-        for c in range(board.width):
-            edge_id = f"h_{r}_{c}"
-            edge = board.get_edge(edge_id)
-            if edge and edge.is_occupied:
-                text = SYM_EDGE_PLAYER_A if edge.owner == str(player_a_id) else SYM_EDGE_PLAYER_B
-                callback = cb_noop("occupied")
-            else:
-                number = get_number_for_edge(board, edge_id)
-                text = str(number) if number else "?"
-                callback = cb_edge_h(r*2, c*2+1) # matrix coords: r*2, c*2+1 for horizontal
-            
-            h_row.append(InlineKeyboardButton(text, callback_data=callback))
-            
-        # Chunk horizontal row (max 8 per row)
-        for i in range(0, len(h_row), 8):
-            all_rows.append(h_row[i:i+8])
-            
-        # Vertical edges (width+1 buttons)
-        # Only if not the last row
-        if r < board.height:
-            v_row = []
-            for c in range(board.width + 1):
-                edge_id = f"v_{r}_{c}"
-                edge = board.get_edge(edge_id)
-                if edge and edge.is_occupied:
-                    text = SYM_EDGE_PLAYER_A if edge.owner == str(player_a_id) else SYM_EDGE_PLAYER_B
-                    callback = cb_noop("occupied")
-                else:
-                    number = get_number_for_edge(board, edge_id)
-                    text = str(number) if number else "?"
-                    callback = cb_edge_v(r*2+1, c*2) # matrix coords: r*2+1, c*2 for vertical
-                
-                v_row.append(InlineKeyboardButton(text, callback_data=callback))
-                
-            # Chunk vertical row (max 8 per row)
-            for i in range(0, len(v_row), 8):
-                all_rows.append(v_row[i:i+8])
-    
-    # 2. Pagination Logic
-    MAX_BUTTONS_PER_PAGE = 60 # Safe limit under 100
-    pages = []
-    current_page_rows = []
-    current_page_buttons = 0
-    
-    for row in all_rows:
-        if current_page_buttons + len(row) > MAX_BUTTONS_PER_PAGE:
-            pages.append(current_page_rows)
-            current_page_rows = []
-            current_page_buttons = 0
-        
-        current_page_rows.append(row)
-        current_page_buttons += len(row)
-    
-    if current_page_rows:
-        pages.append(current_page_rows)
-        
-    # Ensure page index valid
-    if not pages:
-        return InlineKeyboardMarkup([])
-        
-    if page >= len(pages):
-        page = len(pages) - 1
-    if page < 0:
-        page = 0
-        
-    # Set buttons to current page content
-    buttons = pages[page]
-    
-    # 3. Navigation Controls
-    nav_row = []
-    if len(pages) > 1:
-        # Prev button
-        if page > 0:
-            nav_row.append(InlineKeyboardButton("⬅️", callback_data=cb_page(page - 1)))
-        
-        # Page indicator
-        nav_row.append(InlineKeyboardButton(f"{page + 1}/{len(pages)}", callback_data=cb_noop("page")))
-        
-        # Next button
-        if page < len(pages) - 1:
-            nav_row.append(InlineKeyboardButton("➡️", callback_data=cb_page(page + 1)))
-            
-        buttons.append(nav_row)
-    
-    # Leave button
-    buttons.append([
-        InlineKeyboardButton("🚪 Покинуть игру", callback_data="leave"),
-    ])
-    
-    return InlineKeyboardMarkup(buttons)
+    """Compatibility entry point for older callers; same numbered controls."""
+    return numbered_edge_keyboard(board, page)
+
+
+def leave_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🚪 Да, завершить", callback_data="leave:yes"),
+        InlineKeyboardButton("▶️ Продолжить", callback_data="leave:no"),
+    ]])
 
 
 def post_game_keyboard(can_rematch: bool = True) -> InlineKeyboardMarkup:
@@ -451,16 +352,5 @@ def bind_game_keyboard(keyboard: InlineKeyboardMarkup, room) -> InlineKeyboardMa
 
 
 def lines_page_count(board: Board) -> int:
-    """Use the actual renderer's greedy row packing for server-side bounds."""
-    rows = []
-    for r in range(board.height + 1):
-        rows.extend(min(8, board.width - i) for i in range(0, board.width, 8))
-        if r < board.height:
-            rows.extend(min(8, board.width + 1 - i) for i in range(0, board.width + 1, 8))
-    pages, used = 1, 0
-    for length in rows:
-        if used + length > 60:
-            pages += 1
-            used = 0
-        used += length
-    return pages
+    """Pages use fixed ranges, independent of occupied edges."""
+    return max(1, (board.total_edges + NUMBERS_PER_PAGE - 1) // NUMBERS_PER_PAGE)

@@ -8,7 +8,7 @@ All invalid taps receive toast feedback (no silent failures).
 import logging
 import io
 from telegram import Update, InputFile
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 from telegram.ext import ContextTypes
 
 from telegram_pkg.callback_parser import parse_callback, CallbackAction, matrix_to_edge_id
@@ -77,7 +77,20 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 await handle_rematch(update, context)
         elif callback.action == CallbackAction.LEAVE:
             await query.answer()
-            await handle_leave_game(update, context)
+            if callback.param1 == "ask":
+                from telegram_pkg.keyboards import leave_confirm_keyboard
+                from telegram_pkg.screens import show_screen
+                await show_screen(update, context,
+                    "🚪 <b>Завершить эту игру?</b>\nВернуться к этой партии после выхода не получится.",
+                    bind_game_keyboard(leave_confirm_keyboard(), room))
+            elif callback.param1 == "no":
+                if room.state == RoomState.ACTIVE:
+                    await send_game_state(update, context, room)
+                else:
+                    from bot.handlers.play import show_friend_invite
+                    await show_friend_invite(update, context, room)
+            else:
+                await handle_leave_game(update, context)
         elif room.state != RoomState.ACTIVE:
             await query.answer(toast_game_finished())
         elif callback.action == CallbackAction.EDGE:
@@ -89,10 +102,11 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 page = int(callback.param1)
             except (TypeError, ValueError):
                 page = -1
-            if room.input_mode != "lines" or not 0 <= page < lines_page_count(room.board):
+            if room.input_mode not in {"numbered", "lines"} or not 0 <= page < lines_page_count(room.board):
                 await query.answer("Неверная страница")
                 return
             room.current_page = page
+            room.pages_by_player[user.id] = page
             await query.answer()
             await send_game_state(update, context, room)
         elif callback.action == CallbackAction.AFK:
@@ -186,244 +200,104 @@ async def make_bot_move(update: Update, context, room: Room) -> None:
     await send_game_state(update, context, room)
 
 
-async def send_game_state(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    room: Room,
-) -> None:
-    """Send current game state to player."""
-    query = update.callback_query
-    user = update.effective_user
-    
-    is_your_turn = room.is_player_turn(user.id)
-    
-    # Determine opponent name
-    if room.is_pve():
-        difficulty_names = {"easy": "Лёгкий", "medium": "Средний", "hard": "Сложный"}
-        opponent = f"🤖 Бот ({difficulty_names.get(room.bot_difficulty, 'Средний')})"
-    else:
-        opponent_id = room.player_b_id if user.id == room.player_a_id else room.player_a_id
-        opponent_player = get_player(opponent_id)
-        opponent = opponent_player.display_name if opponent_player else "Соперник"
-    
-    # Generate turn message
-    if is_your_turn:
-        turn_msg = YOUR_TURN
-    elif room.is_pve():
-        turn_msg = BOT_TURN
-    else:
-        turn_msg = OPPONENT_TURN
-    
-    # Calculate current scores
-    from game.capture import count_player_squares
-    
-    player_a_str = str(room.player_a_id)
-    player_b_str = str(room.player_b_id) if room.player_b_id else "bot"
-    
-    score_a = count_player_squares(room.board, player_a_str)
-    score_b = count_player_squares(room.board, player_b_str)
-    
-    # Determine which score is "yours" vs "opponent"
-    user_is_player_a = user.id == room.player_a_id
-    if user_is_player_a:
-        your_score = score_a
-        opponent_score = score_b
-        your_emoji = room.player_a_emoji
-        opponent_emoji = room.player_b_emoji
-    else:
-        your_score = score_b
-        opponent_score = score_a
-        your_emoji = room.player_b_emoji
-        opponent_emoji = room.player_a_emoji
-    
-    message = GAME_STATUS.format(
-        your_emoji=your_emoji,
-        your_score=your_score,
-        opponent_score=opponent_score,
-        opponent_emoji=opponent_emoji,
-        opponent=opponent,
-        turn_message=turn_msg,
-    )
-    
-    if room.input_mode == "numbered":
-        message += "\n" + NUMBERED_MODE_HELP
-    
-    # Render board image
-    player_emojis = {
-        player_a_str: room.player_a_emoji,
-        player_b_str: room.player_b_emoji,
-    }
-    
-    image_bytes = render_board(
-        board=room.board,
-        theme_name=room.theme,
-        player_a_id=player_a_str,
-        player_b_id=player_b_str,
-        player_emojis=player_emojis,
-        show_numbers=(room.input_mode in ["numbered", "lines"]),
-    )
-    
-    # Generate keyboard
-    if room.input_mode == "numbered":
-        keyboard = numbered_edge_keyboard(room.board)
-    elif room.input_mode == "lines":
-        keyboard = lines_keyboard(
-            room.board, 
-            player_a_id=player_a_str,
-            player_b_id=player_b_str, 
-            page=room.current_page
-        )
-    else:
-        keyboard = game_board_keyboard(
-            room.board,
-            player_a_id=player_a_str,
-            player_b_id=player_b_str,
-            player_emojis=player_emojis,
-        )
-    
-    # Delete old message and send new one with image and keyboard
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    
-    sent_message = await context.bot.send_photo(
-        chat_id=user.id,
-        photo=io.BytesIO(image_bytes),
-        caption=message,
-        parse_mode="HTML",
-        reply_markup=bind_game_keyboard(keyboard, room),
-    )
-    
-    # Store message_id for future edits
-    room.set_message_id(user.id, sent_message.message_id)
+def _move_summary(room, user_id):
+    """Explain the final move and an opponent's whole capture chain."""
+    from game.edge_numbering import get_number_for_edge
+    if not room.last_move_edge_id:
+        return "Замкнёшь квадрат — получишь очко и ещё один ход."
+    yours = room.last_move_player_id == str(user_id)
+    actor = "Ты" if yours else "Бот" if room.is_pve() else "Соперник"
+    number = get_number_for_edge(room.board, room.last_move_edge_id)
+    lines = [f"⭐ Последний ход: <b>{actor} — №{number}</b>"]
+    own_moves = room.last_turns.get(str(user_id), [])
+    if not yours and own_moves:
+        lines.append(f"Твоя последняя линия: №{get_number_for_edge(room.board, own_moves[-1])}.")
+    if len(room.recent_edge_ids) > 1:
+        numbers = [str(get_number_for_edge(room.board, edge)) for edge in room.recent_edge_ids]
+        shown = ", ".join(numbers[-6:])
+        prefix = f"… ещё {len(numbers) - 6}, " if len(numbers) > 6 else ""
+        lines.append(f"Серия ходов: №{prefix}{shown}.")
+    if room.recent_captures:
+        lines.append(f"{actor}: +{room.recent_captures} очк. за квадраты.")
+        if room.state == RoomState.ACTIVE and room.last_move_player_id == str(room.current_player_id):
+            lines.append("✨ Квадрат замкнут — ходи ещё!" if yours else "✨ За квадрат соперник ходит ещё.")
+    return "\n".join(lines)
 
 
-async def send_game_state_new_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    room,
-    user_id: int,
-) -> None:
-    """Send or edit game state message for a player."""
+def game_caption(room, user_id):
+    from html import escape
     from game.capture import count_player_squares
+    player_a = str(room.player_a_id)
+    player_b = str(room.player_b_id) if room.player_b_id else "bot"
+    other_id = player_b if str(user_id) == player_a else player_a
+    other = get_player(int(other_id)) if other_id != "bot" else None
+    difficulty = {"easy": "лёгкий", "medium": "средний", "hard": "сложный"}
+    opponent = f"Бот · {difficulty.get(room.bot_difficulty, 'средний')}" if room.is_pve() else (other.display_name if other else "Соперник")
+    colours = {"classic": ("🟦", "🟥"), "forest": ("🟩", "🟧"), "night": ("🔵", "🟣")}
+    colour_a, colour_b = colours.get(room.theme, colours["classic"])
+    your_colour, other_colour = (colour_a, colour_b) if str(user_id) == player_a else (colour_b, colour_a)
+    turn = YOUR_TURN if room.is_player_turn(user_id) else BOT_TURN if room.is_pve() else OPPONENT_TURN
+    return (
+        f"🎯 <b>Точки и квадраты · {room.board_width}×{room.board_height}</b>\n"
+        f"Ты {your_colour} <b>{count_player_squares(room.board, str(user_id))}</b> : "
+        f"<b>{count_player_squares(room.board, other_id)}</b> {other_colour} {escape(opponent)}\n\n"
+        f"{turn}\n{NUMBERED_MODE_HELP}\n\n"
+        f"{_move_summary(room, user_id)}\n"
+        "Золото — последняя линия; рамка — серия ходов."
+    )
+
+
+def _board_picture(room):
+    return render_board(
+        board=room.board, theme_name=room.theme,
+        player_a_id=str(room.player_a_id),
+        player_b_id=str(room.player_b_id) if room.player_b_id else "bot",
+        player_emojis={str(room.player_a_id): room.player_a_emoji,
+                       str(room.player_b_id) if room.player_b_id else "bot": room.player_b_emoji},
+        show_numbers=True, last_edge_id=room.last_move_edge_id,
+        recent_edge_ids=room.recent_edge_ids,
+    )
+
+
+async def _deliver_board(context, room, user_id, image_bytes, caption, keyboard):
+    """Edit one game message; replace only if Telegram says it no longer exists."""
     from telegram import InputMediaPhoto
-    
-    is_your_turn = room.is_player_turn(user_id)
-    user_is_player_a = user_id == room.player_a_id
-    
-    # Determine opponent name
-    if room.is_pve():
-        difficulty_names = {"easy": "Лёгкий", "medium": "Средний", "hard": "Сложный"}
-        opponent = f"🤖 Бот ({difficulty_names.get(room.bot_difficulty, 'Средний')})"
-    else:
-        # Get the OTHER player's info
-        if user_is_player_a:
-            opponent_id = room.player_b_id
-        else:
-            opponent_id = room.player_a_id
-        opponent_player = get_player(opponent_id) if opponent_id else None
-        opponent = opponent_player.display_name if opponent_player else "Соперник"
-    
-    # Generate turn message
-    if is_your_turn:
-        turn_msg = YOUR_TURN
-    else:
-        turn_msg = OPPONENT_TURN
-    
-    # Calculate current scores
-    player_a_str = str(room.player_a_id)
-    player_b_str = str(room.player_b_id) if room.player_b_id else "bot"
-    
-    score_a = count_player_squares(room.board, player_a_str)
-    score_b = count_player_squares(room.board, player_b_str)
-    
-    if user_is_player_a:
-        your_score = score_a
-        opponent_score = score_b
-        your_emoji = room.player_a_emoji
-        opponent_emoji = room.player_b_emoji
-    else:
-        your_score = score_b
-        opponent_score = score_a
-        your_emoji = room.player_b_emoji
-        opponent_emoji = room.player_a_emoji
-    
-    message = GAME_STATUS.format(
-        your_emoji=your_emoji,
-        your_score=your_score,
-        opponent_score=opponent_score,
-        opponent_emoji=opponent_emoji,
-        opponent=opponent,
-        turn_message=turn_msg,
-    )
-    
-    if room.input_mode == "numbered":
-        message += "\n" + NUMBERED_MODE_HELP
-    
-    # Render board image
-    player_emojis = {
-        player_a_str: room.player_a_emoji,
-        player_b_str: room.player_b_emoji,
-    }
-    
-    image_bytes = render_board(
-        board=room.board,
-        theme_name=room.theme,
-        player_a_id=player_a_str,
-        player_b_id=player_b_str,
-        player_emojis=player_emojis,
-        show_numbers=(room.input_mode in ["numbered", "lines"]),
-    )
-    
-    # Generate keyboard
-    if room.input_mode == "numbered":
-        keyboard = numbered_edge_keyboard(room.board)
-    elif room.input_mode == "lines":
-        keyboard = lines_keyboard(
-            room.board, 
-            player_a_id=player_a_str,
-            player_b_id=player_b_str, 
-            page=room.current_page
-        )
-    else:
-        keyboard = game_board_keyboard(
-            room.board,
-            player_a_id=player_a_str,
-            player_b_id=player_b_str,
-            player_emojis=player_emojis,
-        )
-    
-    # Try to edit existing message, or send new one
-    existing_msg_id = room.get_message_id(user_id)
-    
-    if existing_msg_id:
+    existing = room.get_message_id(user_id)
+    if existing:
         try:
-            # Edit existing message with new photo and caption
             await context.bot.edit_message_media(
-                chat_id=user_id,
-                message_id=existing_msg_id,
-                media=InputMediaPhoto(
-                    media=io.BytesIO(image_bytes),
-                    caption=message,
-                    parse_mode="HTML",
-                ),
+                chat_id=user_id, message_id=existing,
+                media=InputMediaPhoto(media=io.BytesIO(image_bytes), caption=caption, parse_mode="HTML"),
                 reply_markup=bind_game_keyboard(keyboard, room),
             )
-            return  # Success, no need to send new
-        except Exception as e:
-            logger.debug(f"Failed to edit message {existing_msg_id}: {e}")
-            # Fall through to send new message
-    
-    # Send new message and store its ID
-    sent_message = await context.bot.send_photo(
-        chat_id=user_id,
-        photo=io.BytesIO(image_bytes),
-        caption=message,
-        parse_mode="HTML",
-        reply_markup=bind_game_keyboard(keyboard, room),
+            return
+        except BadRequest as exc:
+            reason = str(exc).lower()
+            if "message is not modified" in reason:
+                return
+            if "message to edit not found" not in reason and "message can't be edited" not in reason:
+                raise
+    sent = await context.bot.send_photo(
+        chat_id=user_id, photo=io.BytesIO(image_bytes), caption=caption,
+        parse_mode="HTML", reply_markup=bind_game_keyboard(keyboard, room),
     )
-    room.set_message_id(user_id, sent_message.message_id)
+    room.set_message_id(user_id, sent.message_id)
+
+
+async def send_game_state(update, context, room):
+    await send_game_state_new_message(update, context, room, update.effective_user.id)
+
+
+async def send_game_state_new_message(update, context, room, user_id):
+    from telegram_pkg.keyboards import NUMBERS_PER_PAGE
+    from game.edge_numbering import get_free_numbers
+    page = room.pages_by_player.get(user_id, 0)
+    free = get_free_numbers(room.board)
+    if free and not any(page * NUMBERS_PER_PAGE < n <= (page + 1) * NUMBERS_PER_PAGE for n in free):
+        page = (free[0] - 1) // NUMBERS_PER_PAGE
+        room.pages_by_player[user_id] = page
+    await _deliver_board(context, room, user_id, _board_picture(room), game_caption(room, user_id),
+                         numbered_edge_keyboard(room.board, page))
 
 
 async def send_game_over(
@@ -446,26 +320,8 @@ async def send_game_over(
         player_b_id=player_b_str,
     )
     
-    # Render final board once
-    player_emojis = {
-        player_a_str: room.player_a_emoji,
-        player_b_str: room.player_b_emoji,
-    }
-    
-    image_bytes = render_board(
-        board=room.board,
-        theme_name=room.theme,
-        player_a_id=player_a_str,
-        player_b_id=player_b_str,
-        player_emojis=player_emojis,
-    )
-    
-    # Delete the initiator's old message
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    
+    image_bytes = _board_picture(room)
+
     # Send to current user (who made the last move)
     await _send_game_over_to_player(context, room, result, user.id, image_bytes)
     
@@ -508,15 +364,8 @@ async def _send_game_over_to_player(
             opponent_score = result.player_a_score
         message = GAME_OVER_LOSE.format(your_score=your_score, opponent_score=opponent_score)
     
-    # Keep completed match association until rematch, replacement or TTL cleanup.
-    
-    await context.bot.send_photo(
-        chat_id=user_id,
-        photo=io.BytesIO(image_bytes),
-        caption=message,
-        parse_mode="HTML",
-        reply_markup=bind_game_keyboard(post_game_keyboard(can_rematch=True), room),
-    )
+    message += "\n\n" + _move_summary(room, user_id)
+    await _deliver_board(context, room, user_id, image_bytes, message, post_game_keyboard(can_rematch=True))
 
 
 async def handle_rematch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

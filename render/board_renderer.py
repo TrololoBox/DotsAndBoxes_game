@@ -7,7 +7,7 @@ Rendering is deterministic: same input always produces identical output.
 
 import io
 from dataclasses import dataclass
-from typing import Optional, Dict
+from typing import Optional, Dict, Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -38,6 +38,8 @@ class BoardRenderer:
         player_a_id: str = "player_a",
         player_b_id: str = "player_b",
         player_emojis: Optional[Dict[str, str]] = None,
+        last_edge_id: Optional[str] = None,
+        recent_edge_ids: Sequence[str] = (),
     ):
         self.board = board
         self.theme = theme
@@ -45,6 +47,8 @@ class BoardRenderer:
         self.player_a_id = player_a_id
         self.player_b_id = player_b_id
         self.player_emojis = player_emojis or {}
+        self.last_edge_id = last_edge_id
+        self.recent_edge_ids = set(recent_edge_ids)
         
         # Calculate image dimensions
         self.width = (
@@ -115,17 +119,13 @@ class BoardRenderer:
         
         edge_numbers = get_edge_numbers(self.board)
         
-        # Try to load a font, fall back to default
-        try:
-            # Increased font size
-            font = ImageFont.truetype("arial.ttf", 24)
-        except Exception:
-            font = ImageFont.load_default()
+        # Pillow's sized bundled font also works in minimal Linux containers.
+        font = ImageFont.load_default(size=28)
         
         for edge_id, number in edge_numbers.items():
             edge = self.board.get_edge(edge_id)
-            if edge is None or edge.is_occupied:
-                continue  # Don't draw numbers on occupied edges
+            if edge is None:
+                continue
             
             # Calculate center position of edge
             if edge.orientation.value == "h":
@@ -142,27 +142,21 @@ class BoardRenderer:
             
             text = str(number)
             
-            # Colors with transparency
-            outline_color = (0, 0, 0, 140)  # Semi-transparent black
-            fill_color = (255, 255, 255, 180)  # Semi-transparent white
-            
-            # Draw text with outline for visibility
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    if dx != 0 or dy != 0:
-                        draw.text(
-                            (center_x + dx, center_y + dy),
-                            text,
-                            fill=outline_color,
-                            font=font,
-                            anchor="mm",
-                        )
-            
-            # Main text
+            # White, high-contrast badges preserve the number of every edge.
+            last = edge_id == self.last_edge_id
+            recent = edge_id in self.recent_edge_ids
+            bounds = draw.textbbox((center_x, center_y), text, font=font, anchor="mm")
+            badge = (bounds[0] - 4, bounds[1] - 3, bounds[2] + 4, bounds[3] + 3)
+            draw.rounded_rectangle(
+                badge, radius=5,
+                fill="#FFD54F" if last else "#FFFFFF",
+                outline="#D88900" if recent or last else self._get_edge_color(edge.owner),
+                width=3 if last else 2 if recent else 1,
+            )
             draw.text(
                 (center_x, center_y),
                 text,
-                fill=fill_color,
+                fill="#111111",
                 font=font,
                 anchor="mm",
             )
@@ -196,6 +190,10 @@ class BoardRenderer:
                 self.config.occupied_thickness if edge.is_occupied
                 else self.config.edge_thickness
             )
+            if edge.is_occupied and (edge_id in self.recent_edge_ids or edge_id == self.last_edge_id):
+                # Keep ownership colour inside a gold halo; final edge is stronger.
+                halo = 10 if edge_id == self.last_edge_id else 6
+                draw.line([x1, y1, x2, y2], fill="#FFD54F", width=thickness + halo)
             
             draw.line([x1, y1, x2, y2], fill=color, width=thickness)
     
@@ -250,6 +248,8 @@ def render_board(
     player_b_id: str = "player_b",
     player_emojis: Optional[Dict[str, str]] = None,
     show_numbers: bool = False,
+    last_edge_id: Optional[str] = None,
+    recent_edge_ids: Sequence[str] = (),
 ) -> bytes:
     """
     Convenience function to render a board.
@@ -272,6 +272,8 @@ def render_board(
         player_a_id=player_a_id,
         player_b_id=player_b_id,
         player_emojis=player_emojis,
+        last_edge_id=last_edge_id,
+        recent_edge_ids=recent_edge_ids,
     )
     return renderer.render(show_numbers=show_numbers)
 

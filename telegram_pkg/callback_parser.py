@@ -136,6 +136,8 @@ def parse_callback(data: str) -> ParsedCallback:
     sizes = {CallbackAction.EDGE: 3, CallbackAction.NUM: 1, CallbackAction.PAGE: 1,
              CallbackAction.AFK: 1, CallbackAction.LEAVE: 0}
     expected = sizes.get(action)
+    if action == CallbackAction.LEAVE and params and params[0] in {"ask", "yes", "no"}:
+        expected = 1
     if action == CallbackAction.REMATCH:
         expected = 1 if params and params[0] in {"yes", "no"} else 0
     if expected is not None and len(params) == expected + 2:
