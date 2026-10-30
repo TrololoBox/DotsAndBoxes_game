@@ -423,7 +423,9 @@ async def test_failed_delivery_does_not_allow_duplicate_move(transport):
     with pytest.raises(NetworkError):
         await game.game_callback(update(1, data), ctx)
     assert occupied(r) == 1 and r.current_player_id == 2
-    await game.game_callback(update(1, data), ctx)
+    # A stale tap now attempts a refresh; an ongoing outage may fail that refresh too.
+    with pytest.raises(NetworkError):
+        await game.game_callback(update(1, data), ctx)
     assert occupied(r) == 1
 
 

@@ -63,9 +63,22 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     async with room.lock:
         if (get_room(room.id) is not room or player.current_room_id != room.id
-                or user.id not in (room.player_a_id, room.player_b_id)
-                or callback.version != room.state_version):
+                or user.id not in (room.player_a_id, room.player_b_id)):
             await query.answer("Кнопка устарела. Используйте текущее поле.")
+            return
+        if callback.version != room.state_version:
+            # Do not replay the requested action. Refresh this player's current view.
+            try:
+                await query.answer("Поле обновилось. Показываю текущее состояние.")
+            except TelegramError:
+                logger.warning("Could not acknowledge board refresh")
+            if room.state == RoomState.ACTIVE:
+                await send_game_state(update, context, room)
+            elif room.state == RoomState.COMPLETED:
+                await send_game_over(update, context, room, only_current_user=True)
+            elif room.state == RoomState.PENDING:
+                from bot.handlers.play import show_friend_invite
+                await show_friend_invite(update, context, room)
             return
         if callback.action == CallbackAction.REMATCH:
             if room.state != RoomState.COMPLETED:
@@ -179,10 +192,11 @@ async def _apply_player_move(update: Update, context, room: Room, edge_id) -> No
     elif room.is_pve() and room.current_player_index == 1:
         await make_bot_move(update, context, room)
     else:
-        await send_game_state(update, context, room)
+        recipients = [user.id]
         if not room.is_pve() and room.player_b_id:
             other = room.player_b_id if user.id == room.player_a_id else room.player_a_id
-            await send_game_state_new_message(update, context, room, other)
+            recipients.append(other)
+        await send_game_states(update, context, room, recipients)
 
 
 async def make_bot_move(update: Update, context, room: Room) -> None:
@@ -204,11 +218,11 @@ def _move_summary(room, user_id):
     """Explain the final move and an opponent's whole capture chain."""
     from game.edge_numbering import get_number_for_edge
     if not room.last_move_edge_id:
-        return "Замкнёшь квадрат — получишь очко и ещё один ход."
+        return ""
     yours = room.last_move_player_id == str(user_id)
     actor = "Ты" if yours else "Бот" if room.is_pve() else "Соперник"
     number = get_number_for_edge(room.board, room.last_move_edge_id)
-    lines = [f"⭐ Последний ход: <b>{actor} — №{number}</b>"]
+    lines = [f"★ <b>{actor} — №{number}</b>"]
     own_moves = room.last_turns.get(str(user_id), [])
     if not yours and own_moves:
         lines.append(f"Твоя последняя линия: №{get_number_for_edge(room.board, own_moves[-1])}.")
@@ -236,15 +250,20 @@ def game_caption(room, user_id):
     colours = {"classic": ("🟦", "🟥"), "forest": ("🟩", "🟧"), "night": ("🔵", "🟣")}
     colour_a, colour_b = colours.get(room.theme, colours["classic"])
     your_colour, other_colour = (colour_a, colour_b) if str(user_id) == player_a else (colour_b, colour_a)
-    turn = YOUR_TURN if room.is_player_turn(user_id) else BOT_TURN if room.is_pve() else OPPONENT_TURN
-    return (
-        f"🎯 <b>Точки и квадраты · {room.board_width}×{room.board_height}</b>\n"
+    intro = not room.last_move_edge_id
+    # Long instructions belong to the rules screen and the initial board.
+    status = "🟢 <b>Твой ход</b>" if room.is_player_turn(user_id) else "🤖 <b>Бот думает…</b>" if room.is_pve() else "🔴 <b>Ход соперника</b>"
+    caption = (
+        f"🎯 <b>{room.board_width}×{room.board_height}</b> · {status}\n"
         f"Ты {your_colour} <b>{count_player_squares(room.board, str(user_id))}</b> : "
-        f"<b>{count_player_squares(room.board, other_id)}</b> {other_colour} {escape(opponent)}\n\n"
-        f"{turn}\n{NUMBERED_MODE_HELP}\n\n"
-        f"{_move_summary(room, user_id)}\n"
-        "Золото — последняя линия; рамка — серия ходов."
+        f"<b>{count_player_squares(room.board, other_id)}</b> {other_colour} {escape(opponent)}"
     )
+    if intro:
+        caption += (f"\n\n{NUMBERED_MODE_HELP}\n"
+                    "Квадрат = 1 очко и ещё ход. ★ Золото — последний ход. ✓ — занято.")
+    else:
+        caption += "\n" + _move_summary(room, user_id)
+    return caption
 
 
 def _board_picture(room):
@@ -300,6 +319,26 @@ async def send_game_state_new_message(update, context, room, user_id):
                          numbered_edge_keyboard(room.board, page))
 
 
+async def _deliver_independently(user_ids, deliver):
+    """Attempt every recipient even if one Telegram delivery fails."""
+    first_error = None
+    for user_id in dict.fromkeys(user_ids):
+        try:
+            await deliver(user_id)
+        except TelegramError as exc:
+            logger.warning("Board delivery failed for player %s: %s", user_id, type(exc).__name__)
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
+
+
+async def send_game_states(update, context, room, user_ids):
+    async def deliver(user_id):
+        await send_game_state_new_message(update, context, room, user_id)
+    await _deliver_independently(user_ids, deliver)
+
+
 async def send_game_over(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -322,13 +361,13 @@ async def send_game_over(
     
     image_bytes = _board_picture(room)
 
-    # Send to current user (who made the last move)
-    await _send_game_over_to_player(context, room, result, user.id, image_bytes)
-    
-    # In PvP, also send to the OTHER player
+    recipients = [user.id]
     if not only_current_user and not room.is_pve() and room.player_b_id:
         other_player_id = room.player_a_id if user.id == room.player_b_id else room.player_b_id
-        await _send_game_over_to_player(context, room, result, other_player_id, image_bytes)
+        recipients.append(other_player_id)
+    async def deliver(user_id):
+        await _send_game_over_to_player(context, room, result, user_id, image_bytes)
+    await _deliver_independently(recipients, deliver)
 
 
 async def _send_game_over_to_player(
@@ -554,9 +593,10 @@ async def _start_rematch_game(update: Update, context: ContextTypes.DEFAULT_TYPE
     delete_room(old_room.id)
 
     # Send game state to both players
-    await send_game_state_new_message(update, context, new_room, old_room.player_a_id)
+    recipients = [old_room.player_a_id]
     if old_room.player_b_id:
-        await send_game_state_new_message(update, context, new_room, old_room.player_b_id)
+        recipients.append(old_room.player_b_id)
+    await send_game_states(update, context, new_room, recipients)
 
 
 async def handle_afk_choice(

@@ -113,6 +113,12 @@ def get_queue_position(telegram_id: int) -> Optional[int]:
     return None
 
 
+def get_queue_entry(telegram_id: int) -> Optional[QueueEntry]:
+    """Return the current search so menus can show its real size and position."""
+    return next((entry for queue in _queues.values() for entry in queue
+                 if entry.telegram_id == telegram_id), None)
+
+
 def clear_all_queues() -> None:
     """Clear all queues (for restart)."""
     for queue in _queues.values():

@@ -54,7 +54,7 @@ SYM_EDGE_PLAYER_B = "🟥"
 SYM_EMPTY_SQUARE = "🟧"
 
 
-def main_menu_keyboard(room=None) -> InlineKeyboardMarkup:
+def main_menu_keyboard(room=None, searching=False) -> InlineKeyboardMarkup:
     """Main menu keyboard."""
     if room is not None:
         rows = [
@@ -63,6 +63,12 @@ def main_menu_keyboard(room=None) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📖 Как играть", callback_data="menu:rules")],
         ]
         return bind_game_keyboard(InlineKeyboardMarkup(rows), room)
+    if searching:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Отменить поиск", callback_data=cb_cancel_queue())],
+            [InlineKeyboardButton("🤖 Сыграть с ботом", callback_data="menu:quick")],
+            [InlineKeyboardButton("📖 Как играть", callback_data="menu:rules")],
+        ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Быстрая игра", callback_data="menu:quick")],
         [InlineKeyboardButton("🎮 Другие режимы", callback_data=cb_menu("play"))],
@@ -243,17 +249,20 @@ NUMBERS_PER_PAGE = 42
 
 
 def numbered_edge_keyboard(board: Board, page: int = 0) -> InlineKeyboardMarkup:
-    """Fixed number ranges; remove taken moves without renumbering the rest."""
+    """Keep each number in its original cell, including occupied lines."""
     from game.edge_numbering import get_edge_numbers
     count = lines_page_count(board)
     page = max(0, min(page, count - 1))
     lower, upper = page * NUMBERS_PER_PAGE + 1, min((page + 1) * NUMBERS_PER_PAGE, board.total_edges)
-    free = [InlineKeyboardButton(str(number), callback_data=cb_num(number))
-            for edge_id, number in get_edge_numbers(board).items()
-            if lower <= number <= upper and not board.get_edge(edge_id).is_occupied]
-    rows = [free[i:i + NUMBER_COLUMNS] for i in range(0, len(free), NUMBER_COLUMNS)]
-    if not rows:
-        rows = [[InlineKeyboardButton("Здесь все линии заняты", callback_data="noop:page")]]
+    cells = []
+    for edge_id, number in get_edge_numbers(board).items():
+        if lower <= number <= upper:
+            occupied = board.get_edge(edge_id).is_occupied
+            cells.append(InlineKeyboardButton(
+                f"{number}✓" if occupied else str(number),
+                callback_data="noop:occupied" if occupied else cb_num(number),
+            ))
+    rows = [cells[i:i + NUMBER_COLUMNS] for i in range(0, len(cells), NUMBER_COLUMNS)]
     if count > 1:
         nav = []
         if page:
