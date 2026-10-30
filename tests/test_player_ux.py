@@ -61,7 +61,8 @@ def test_number_on_button_selects_same_edge_for_every_size(size):
 
 @pytest.mark.parametrize("theme", ["classic", "forest", "night"])
 @pytest.mark.parametrize("edge,halo_pixel,owner_pixel", [
-    ("h_0_0", (52, 32), (52, 40)),
+    # Sample the visible line, away from the wider numbered star badge.
+    ("h_0_0", (108, 32), (108, 40)),
     ("v_0_0", (32, 52), (40, 52)),
 ])
 def test_last_move_visibly_highlighted_without_losing_ownership(theme, edge, halo_pixel, owner_pixel):

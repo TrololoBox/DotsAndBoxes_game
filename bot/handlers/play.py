@@ -220,9 +220,8 @@ async def start_pvp_game(
     
     room.start_game()
     
-    from bot.handlers.game import send_game_state_new_message
-    await send_game_state_new_message(update, context, room, player_a_id)
-    await send_game_state_new_message(update, context, room, player_b_id)
+    from bot.handlers.game import send_game_states
+    await send_game_states(update, context, room, [player_a_id, player_b_id])
 
 
 async def create_friend_invite(
@@ -254,6 +253,16 @@ async def create_friend_invite(
 
 async def show_friend_invite(update, context, room):
     """Recover the same invitation, including its link, from any menu screen."""
+    from datetime import datetime
+    from math import ceil
+    from state.cleanup import cleanup_stale_rooms, PENDING_ROOM_TIMEOUT
+    cleanup_stale_rooms()
+    if get_room(room.id) is not room or room.state != RoomState.PENDING:
+        from bot.handlers.start import show_main_menu
+        await show_main_menu(update, context)
+        return
+    remaining = max(0, ceil((PENDING_ROOM_TIMEOUT - (datetime.now() - room.created_at)).total_seconds()))
+    minutes, seconds = divmod(remaining, 60)
     # Generate invite link
     bot_username = (await context.bot.get_me()).username
     invite_link = f"https://t.me/{bot_username}?start=invite_{room.invite_code}"
@@ -265,7 +274,7 @@ async def show_friend_invite(update, context, room):
         "👥 <b>Приглашение создано!</b>\n\n"
         f"Нажми кнопку ниже, чтобы пригласить друга, или отправь ссылку:\n"
         f"<code>{escape(invite_link)}</code>\n\n"
-        "⏳ Ссылка действительна 10 минут."
+        f"⏳ Осталось: {minutes}:{seconds:02d}. Срок считается с создания приглашения."
     )
     
     # Telegram's share URL works without an inline-query handler or /setinline.

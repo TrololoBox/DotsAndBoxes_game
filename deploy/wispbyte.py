@@ -44,7 +44,7 @@ else:
     async def verified_post_init(application):
         await original_post_init(application)
         revision = os.environ.get("DEPLOYMENT_REVISION", "local")
-        print(f"TELEGRAM CONNECTED: @{application.bot.username} | numbered-ux-v1 | {revision}", flush=True)
+        print(f"TELEGRAM CONNECTED: @{application.bot.username} | numbered-ux-v2 | {revision}", flush=True)
 
     entry.post_init = verified_post_init
     logging.getLogger("telegram.ext.Application").setLevel(logging.INFO)

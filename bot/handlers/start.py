@@ -26,11 +26,23 @@ async def show_main_menu(update, context):
     room = current_room(update.effective_user.id)
     open_room = room if room and room.state in (RoomState.ACTIVE, RoomState.PENDING) else None
     text = "🎯 <b>Точки и квадраты</b>\n\n"
-    text += "У тебя есть текущая игра. Продолжить или завершить?" if open_room else "Быстрая игра — поле 3×3 против лёгкого бота."
-    await show_screen(update, context, text, main_menu_keyboard(open_room))
+    from state.queues import get_queue_entry, get_queue_position
+    search = get_queue_entry(update.effective_user.id) if not open_room else None
+    if open_room:
+        text += "У тебя есть текущая игра. Продолжить или завершить?"
+    elif search:
+        size = search.board_size
+        width, height = ((size - 10000) // 100, size % 100) if size > 100 else (size, size)
+        text += (f"⏳ Ищем соперника · {width}×{height}\n"
+                 f"Место в очереди: {get_queue_position(update.effective_user.id)}\n"
+                 "Поиск продолжается. Его можно отменить или сыграть с ботом.")
+    else:
+        text += "Быстрая игра — поле 3×3 против лёгкого бота."
+    await show_screen(update, context, text, main_menu_keyboard(open_room, searching=bool(search)))
 
 
 async def resume_current_game(update, context):
+    cleanup_stale_rooms()
     room = current_room(update.effective_user.id)
     if not room:
         return False
@@ -65,6 +77,10 @@ async def start_command(update, context):
         return
     if await resume_current_game(update, context):
         return
+    from state.queues import is_in_queue
+    if is_in_queue(user.id):
+        await show_main_menu(update, context)
+        return
     welcome = (
         f"👋 Привет, {escape(user.first_name)}!\n\n"
         "🎯 <b>Точки и квадраты</b>\n"
@@ -86,6 +102,7 @@ async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     user = update.effective_user
     
+    cleanup_stale_rooms()
     # Find the room by invite code
     room = get_room_by_invite(invite_code)
     
@@ -116,7 +133,6 @@ async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return
     
-    from state.cleanup import cleanup_stale_rooms
     from bot.handlers.play import has_open_room
     from state.players import get_player
     cleanup_stale_rooms()
@@ -142,10 +158,8 @@ async def handle_invite_join(update: Update, context: ContextTypes.DEFAULT_TYPE,
     logger.info(f"Player {user.id} joined room {room.id} via invite. Game started!")
     
     # Send game state to joining player
-    from bot.handlers.game import send_game_state_new_message
-    await send_game_state_new_message(update, context, room, user.id)
-    
-    await send_game_state_new_message(update, context, room, room.player_a_id)
+    from bot.handlers.game import send_game_states
+    await send_game_states(update, context, room, [user.id, room.player_a_id])
 
 
 def _parse_invite_code(invite_arg: str) -> str | None:
@@ -164,6 +178,7 @@ def _parse_invite_code(invite_arg: str) -> str | None:
 
 async def main_menu_callback(update, context):
     query = update.callback_query
+    cleanup_stale_rooms()
     await query.answer()
     action = query.data.removeprefix("menu:")
     if action == "quick":

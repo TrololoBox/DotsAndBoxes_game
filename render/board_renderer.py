@@ -6,6 +6,7 @@ Rendering is deterministic: same input always produces identical output.
 """
 
 import io
+import math
 from dataclasses import dataclass
 from typing import Optional, Dict, Sequence
 
@@ -146,17 +147,26 @@ class BoardRenderer:
             last = edge_id == self.last_edge_id
             recent = edge_id in self.recent_edge_ids
             bounds = draw.textbbox((center_x, center_y), text, font=font, anchor="mm")
-            badge = (bounds[0] - 4, bounds[1] - 3, bounds[2] + 4, bounds[3] + 3)
+            badge = (bounds[0] - 4 - (18 if last else 0), bounds[1] - 3, bounds[2] + 4, bounds[3] + 3)
             draw.rounded_rectangle(
                 badge, radius=5,
-                fill="#FFD54F" if last else "#FFFFFF",
+                fill="#FFD54F" if last else "#ECECEC" if edge.is_occupied else "#FFFFFF",
                 outline="#D88900" if recent or last else self._get_edge_color(edge.owner),
                 width=3 if last else 2 if recent else 1,
             )
+            if last:
+                # A vector star works even when the container has no emoji font.
+                cx, cy = badge[0] + 10, center_y
+                points = []
+                for point in range(10):
+                    angle = -math.pi / 2 + point * math.pi / 5
+                    radius = 8 if point % 2 == 0 else 3.5
+                    points.append((cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+                draw.polygon(points, fill="#111111")
             draw.text(
                 (center_x, center_y),
                 text,
-                fill="#111111",
+                fill="#727272" if edge.is_occupied and not last else "#111111",
                 font=font,
                 anchor="mm",
             )
